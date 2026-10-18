@@ -1448,16 +1448,24 @@ def fetch_balance(cfg):
 def refresh_balance(cfg, stats, before=None):
     """后台查余额，结果写进 stats["balance"]（查不到为 "n/a"）。
     传入 before（这次提问前的余额）时，顺便算出这次花了多少，写进 stats["last_cost"]。"""
+    # 使用时间戳来标记查询，确保只有最新的查询结果会被使用
+    query_time = time.time()
+    if not hasattr(stats, '_last_query_time'):
+        stats._last_query_time = 0
+    stats._last_query_time = query_time
+    
     def run():
         bal = fetch_balance(cfg)
-        if bal is None:
-            if not isinstance(stats["balance"], float):  # 偶尔查失败时保留上一次的余额
-                stats["balance"] = "n/a"
-        else:
-            stats["balance"] = bal
-            if isinstance(before, float):
-                stats["last_cost"] = max(before - bal, 0.0)
-        MENUBAR.update(stats["balance"])
+        # 只有当这是最新的查询时才更新结果（防止旧查询覆盖新结果）
+        if query_time >= stats._last_query_time:
+            if bal is None:
+                if not isinstance(stats["balance"], float):  # 偶尔查失败时保留上一次的余额
+                    stats["balance"] = "n/a"
+            else:
+                stats["balance"] = bal
+                if isinstance(before, float):
+                    stats["last_cost"] = max(before - bal, 0.0)
+            MENUBAR.update(stats["balance"])
     threading.Thread(target=run, daemon=True).start()
 
 
@@ -2504,6 +2512,7 @@ def main():
             elif type(e).__name__ in ("APIConnectionError", "APITimeoutError"):
                 tip = "\n网络连接失败，检查网络或代理后再试。"
             console.print(Panel(Text(f"{e}\n（{type(e).__name__}）{tip}"), title="出错了", border_style="red"), "\n")
+        # 不管成功还是失败，都保存会话（这样即使余额不足，之前的对话也不会丢失）
         try:
             save_session(sess, history, cfg)
         except OSError as e:
