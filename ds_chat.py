@@ -43,7 +43,7 @@ from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
-VERSION = "1.3.2"
+VERSION = "1.3.3"
 # 有的中转站会拦截 Python 默认的 User-Agent（返回 403），所以带上自己的名字
 USER_AGENT = f"ds-chat/{VERSION}"
 INSTALL_CMD = "curl -fsSL https://raw.githubusercontent.com/imthnio/ds-chat/main/install.sh | bash"
@@ -2194,11 +2194,11 @@ def main():
         left = f"   {rounds} 轮对话   {stats['tokens']} tokens   /help 查看命令"
         bal = stats["balance"]
         cost = stats.get("last_cost")
-        right = f"本次 💲{cost:.4f}   " if cost else ""
+        right = f"本次 💰{cost:.4f}   " if cost else ""
         if bal is None:
             right += "余额 查询中…  "
         elif isinstance(bal, float):
-            right += f"💲{bal:.2f}  "
+            right += f"💰{bal:.2f}  "
         # 按显示宽度（中文、⚡ 占两格）算右对齐的空格
         used = get_cwidth(left_accent + left + right)
         return [
