@@ -43,7 +43,7 @@ from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
-VERSION = "1.3.4"
+VERSION = "1.3.5"
 # 有的中转站会拦截 Python 默认的 User-Agent（返回 403），所以带上自己的名字
 USER_AGENT = f"ds-chat/{VERSION}"
 INSTALL_CMD = "curl -fsSL https://raw.githubusercontent.com/imthnio/ds-chat/main/install.sh | bash"
@@ -61,7 +61,7 @@ ACCENT = "#7aa2ff"  # 主题色，随当前模型变化（见 apply_theme）
 DIM = "grey50"
 
 # 顶部 logo：按桌面上的图片取色画成的像素图，每个字符是一个像素，空格是透明。
-# 画的时候上下两行像素合成一个字符（▀ 上半块用前景色、下半块用背景色）。
+# 画的时候上下两行像素合成一个字符：同色就用背景色空格（最整齐），不同色用 ▀（上半块前景色、下半块背景色）。
 LOGOS = {
     # Claude：橘色小螃蟹（Claw'd），原图是 12x8 的像素画，这里放大 2 倍
     'claude': ({'o': '#da7758', 'k': '#000000'}, [
@@ -635,6 +635,8 @@ def draw_logo(key):
         for t, b in zip(top, bottom):
             if t == " " and b == " ":
                 out.append(" ")
+            elif t == b:  # 上下同色：用带背景色的空格，整格涂满，没有字符边缘的毛边和行间细缝
+                out.append(" ", style=f"on {palette[t]}")
             elif b == " ":
                 out.append("▀", style=palette[t])
             elif t == " ":
@@ -642,7 +644,7 @@ def draw_logo(key):
             else:
                 out.append("▀", style=f"{palette[t]} on {palette[b]}")
         out.append("\n")
-    out.rstrip()
+    out.right_crop(1)  # 只去掉最后的换行（不能 rstrip：整格背景色的“空格”也会被当成空白删掉）
     return out
 
 
