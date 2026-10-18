@@ -1,8 +1,10 @@
-// ds-chat 菜单栏余额：每 2 秒读一次文件，在屏幕顶部菜单栏显示“橘色钱袋图标 + 余额数字”。
+// ds-chat 菜单栏余额：每 0.5 秒读一次文件，在屏幕顶部菜单栏显示“橘色钱袋图标 + 余额数字”。
 // 文件为空就隐藏；文件超过 20 秒没更新（ai 都关了）就退出。
+// 点一下：建一个 <文件>.refresh，ai 看到后马上重新查余额。
 import Cocoa
 
 let path = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : ""
+let refreshRequest = path + ".refresh"
 let orange = NSColor(srgbRed: 0.93, green: 0.48, blue: 0.29, alpha: 1)
 
 // 画在 18x18 的格子里（y 轴朝上）：外圈圆环 + 实心钱袋，袋身上的 $ 镂空
@@ -68,8 +70,19 @@ final class Bar: NSObject, NSApplicationDelegate {
         item.button?.image = bagIcon(size: 18)
         item.button?.imagePosition = .imageLeft
         item.button?.font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
+        item.button?.target = self
+        item.button?.action = #selector(clicked)
+        item.button?.toolTip = "点一下刷新余额"
         tick()
-        Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.tick() }
+        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.tick() }
+        if ProcessInfo.processInfo.environment["DSBAR_TEST_CLICK"] != nil {  // 自动测试用：模拟点一下
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.clicked() }
+        }
+    }
+
+    @objc func clicked() {
+        FileManager.default.createFile(atPath: refreshRequest, contents: nil)
+        item.button?.title = " …"
     }
 
     func tick() {

@@ -43,7 +43,7 @@ from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 # 有的中转站会拦截 Python 默认的 User-Agent（返回 403），所以带上自己的名字
 USER_AGENT = f"ds-chat/{VERSION}"
 INSTALL_CMD = "curl -fsSL https://raw.githubusercontent.com/imthnio/ds-chat/main/install.sh | bash"
@@ -769,7 +769,7 @@ def show_help():
         ("/memory", "AI 记住的关于你的事：查看、添加、删除"),
         ("/copy", "复制上一条回答"),
         ("/compact", "把前面的对话压缩成摘要（太长时也会自动压缩）"),
-        ("/bar", "打开 / 关闭屏幕顶部菜单栏的 💰余额"),
+        ("/bar", "打开 / 关闭屏幕顶部菜单栏的余额（点一下菜单栏里的余额立即刷新）"),
         ("/agent", "打开 / 关闭 Agent 模式（AI 能否操作电脑）"),
         ("/line", "切换到备用线路（主线路连不上时用）"),
         ("/new", "开始新对话（当前对话会留在历史里）"),
@@ -1451,7 +1451,8 @@ def refresh_balance(cfg, stats, before=None):
     def run():
         bal = fetch_balance(cfg)
         if bal is None:
-            stats["balance"] = "n/a"
+            if not isinstance(stats["balance"], float):  # 偶尔查失败时保留上一次的余额
+                stats["balance"] = "n/a"
         else:
             stats["balance"] = bal
             if isinstance(before, float):
@@ -1462,14 +1463,17 @@ def refresh_balance(cfg, stats, before=None):
 
 class MenuBar:
     """屏幕顶部菜单栏显示余额（橘色钱袋图标）（ai 打开时显示，退出后消失）。
-    显示由一个很小的原生程序 dsbar 负责：它每 2 秒读一次 menubar.txt，文件超过 20 秒没更新就自己退出。
+    显示由一个很小的原生程序 dsbar 负责：它每 0.5 秒读一次 menubar.txt，文件超过 20 秒没更新就自己退出。
+    点一下菜单栏里的余额，dsbar 会建一个 menubar.txt.refresh，这边看到后马上重新查余额。
     开着几个 ai 窗口也只有一个 dsbar。"""
     BIN = os.path.join(APP_DIR, "dsbar")
     FILE = os.path.join(APP_DIR, "menubar.txt")
+    REQUEST = FILE + ".refresh"
     PID = os.path.join(APP_DIR, "dsbar.pid")
 
     def __init__(self):
-        self.text, self.on = "", False
+        self.text, self.on, self.busy = "", False, False
+        self.refresher = None  # 点击菜单栏时调用：重新查余额（查完会调用 update）
 
     def start(self):
         if not STORE.get("menubar", True) or not os.access(self.BIN, os.X_OK) or self.on:
@@ -1494,19 +1498,33 @@ class MenuBar:
             return False
 
     def _heartbeat(self):
+        last = 0
         while self.on:
-            self._write()
-            time.sleep(5)
+            if os.path.exists(self.REQUEST):  # 用户点了菜单栏
+                try:
+                    os.remove(self.REQUEST)
+                except OSError:
+                    pass
+                if self.refresher:
+                    self.busy = True
+                    self._write()
+                    self.refresher()
+            if time.time() - last >= 5:
+                self._write()
+                last = time.time()
+            time.sleep(0.5)
 
     def _write(self):
+        text = ("…" if self.busy else self.text) if self.on else ""
         try:
             with open(self.FILE, "w", encoding="utf-8") as f:
-                f.write(self.text if self.on else "")
+                f.write(text)
         except OSError:
             pass
 
     def update(self, balance):
         self.text = f"{balance:.2f}" if isinstance(balance, float) else ""  # 图标由 dsbar 自己画
+        self.busy = False
         if self.on:
             self._write()
 
@@ -1527,7 +1545,9 @@ def md(text):
         elif not fence and line.strip() and not line.endswith("  "):
             line += "  "
         out.append(line)
-    return Markdown("\n".join(out), code_theme="monokai")
+    # hyperlinks=False：网址只显示文字，不输出终端超链接控制码。流式输出时每次重画都会生成新的链接编号，
+    # 怀疑这样累积下去会让 macOS「终端」在绘制时崩溃；终端自己也能识别网址（按住 ⌘ 点击打开）。
+    return Markdown("\n".join(out), code_theme="monokai", hyperlinks=False)
 
 
 def split_think(content):
@@ -1688,6 +1708,7 @@ class TypeAhead:
 
     def __init__(self):
         self.buf, self.queue = "", []
+        self.version = 0  # 输入框内容每变一次加 1，底部显示据此决定要不要重画
         self.lock = threading.Lock()
         self._thread, self._run, self._fd, self._old = None, False, None, None
 
@@ -1729,6 +1750,7 @@ class TypeAhead:
                         esc = ""
                     continue
                 with self.lock:
+                    self.version += 1
                     if ch == "\x1b":
                         esc = ch
                     elif ch in "\r\n":
@@ -1758,17 +1780,26 @@ class TypeAhead:
 class TurnView:
     """AI 回答、执行操作期间屏幕底部的显示：正在生成的内容、转圈状态、补充输入框。"""
 
+    MAX_LINES = 20  # 生成过程中滚动显示的最多行数，重画的量少一些，终端负担小
+
     def __init__(self):
+        self.version = 0
         self.live, self.stream, self.status = None, None, None
         self.spinner = Spinner("dots")
         self.typeahead = TypeAhead()
+        self._drawing = False
+
+    def __setattr__(self, name, value):
+        if name in ("stream", "status"):
+            object.__setattr__(self, "version", self.version + 1)
+        object.__setattr__(self, name, value)
 
     def __rich_console__(self, console, options):
         height = options.max_height or console.height
         box = self._box() if self.typeahead.active else None
         reserve = (3 if box else 0) + (1 if self.status else 0) + 1
         if self.stream is not None:
-            yield _Tail(self.stream, max(height - reserve, 3))
+            yield _Tail(self.stream, max(min(height - reserve, self.MAX_LINES), 3))
         if self.status:
             self.spinner.text = Text(" " + self.status, style=f"italic {ACCENT}")
             yield Padding(self.spinner, (0, 0, 0, 2))
@@ -1788,13 +1819,31 @@ class TurnView:
 
     def start(self):
         self.typeahead.start()
-        self.live = Live(self, console=console, refresh_per_second=12, transient=True, vertical_overflow="crop")
-        self.live.start()
+        # 不用 Live 自带的定时刷新（不管有没有变化都重画）；由 _pump 在有变化时才重画，最多每秒 8 次
+        self.live = Live(self, console=console, auto_refresh=False, transient=True, vertical_overflow="crop")
+        self.live.start(refresh=True)
+        self._drawing = True
+        threading.Thread(target=self._pump, args=(self.live,), daemon=True).start()
+
+    def _pump(self, live):
+        last_key, last_time = None, 0.0
+        while self.live is live:
+            key = (self.version, self.typeahead.version)
+            now = time.time()
+            # 内容变了就重画；没变时每 0.25 秒画一次，让转圈动画和计时继续走
+            if self._drawing and (key != last_key or now - last_time >= 0.25):
+                try:
+                    live.refresh()
+                except Exception:
+                    pass
+                last_key, last_time = key, now
+            time.sleep(0.125)
 
     def stop(self):
+        self._drawing = False
         if self.live:
-            self.live.stop()
-            self.live = None
+            live, self.live = self.live, None
+            live.stop()
         self.typeahead.stop()
         self.stream = self.status = None
 
@@ -1804,13 +1853,15 @@ class TurnView:
         if not self.live:
             yield
             return
+        self._drawing = False
         self.live.stop()
         self.typeahead.stop()
         try:
             yield
         finally:
             self.typeahead.start()
-            self.live.start()
+            self.live.start(refresh=True)
+            self._drawing = True
 
     @contextmanager
     def busy(self, text):
@@ -2237,6 +2288,7 @@ def main():
 
     history, stats = [], {"tokens": 0, "balance": None, "last_cost": None}
     state = {"auto_approve": False}  # 本次打开期间是否不再询问
+    MENUBAR.refresher = lambda: refresh_balance(cfg, stats)  # 点菜单栏余额时立即刷新（cfg 换了也跟着用新的）
     MENUBAR.start()
     sess = {}  # 当前会话的 id，第一次保存时生成
     refresh_balance(cfg, stats)
