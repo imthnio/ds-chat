@@ -43,7 +43,7 @@ from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
-VERSION = "1.3.7"
+VERSION = "1.4.0"
 # 有的中转站会拦截 Python 默认的 User-Agent（返回 403），所以带上自己的名字
 USER_AGENT = f"ds-chat/{VERSION}"
 INSTALL_CMD = "curl -fsSL https://raw.githubusercontent.com/imthnio/ds-chat/main/install.sh | bash"
@@ -356,23 +356,110 @@ def fetch_models(base, key):
     return sorted(m["id"] for m in data.get("data", []) if m.get("id"))
 
 
-def test_model(p, model):
+def test_model(p, model, timeout=60):
     """用和聊天一样的流式请求试一次，收到第一块数据就算成功。"""
     if p.get("type") == "anthropic":
-        with anthropic_client(p).messages.stream(
-                model=model, max_tokens=64, messages=[{"role": "user", "content": "hi"}]) as stream:
+        client = anthropic_client(p).with_options(timeout=timeout, max_retries=0)
+        with client.messages.stream(model=model, max_tokens=64,
+                                    messages=[{"role": "user", "content": "hi"}]) as stream:
             for _ in stream:
                 return
         return
-    for _ in stream_chat(p["base_url"], p["api_key"], model, [{"role": "user", "content": "hi"}]):
+    for _ in stream_chat(p["base_url"], p["api_key"], model, [{"role": "user", "content": "hi"}], timeout=timeout):
         return
+
+
+_CHECK_CACHE = {}  # (地址, 密钥, 模型) -> (是否可用, 说明, 检测时间)
+
+
+def _why(e):
+    """把检测失败的原因变成一句短话。"""
+    code = error_code(e)
+    text = str(getattr(e, "message", "") or e)
+    if hasattr(e, "read"):
+        try:
+            text += e.read().decode("utf-8", "replace")
+        except Exception:
+            pass
+    if "负载" in text or "overload" in text.lower() or code == 529:
+        return "负载过高"
+    if code in (401, 403):
+        return "没有权限"
+    if code == 404:
+        return "不存在或通道不可用"
+    if code == 429:
+        return "请求太频繁或额度不足"
+    if code and code >= 500:
+        return f"服务器出错（{code}）"
+    if code:
+        return f"出错（{code}）"
+    if "timed out" in text.lower() or isinstance(e, TimeoutError):
+        return "超时"
+    return "连不上"
+
+
+def check_models(p, models, max_age=300):
+    """同时检测一批模型能不能用（结果缓存 5 分钟）。返回 {模型: (是否可用, 说明)}。"""
+    from concurrent.futures import ThreadPoolExecutor
+    now = time.time()
+    results, todo = {}, []
+    for m in models:
+        hit = _CHECK_CACHE.get((p["base_url"], p["api_key"], m))
+        if hit and now - hit[2] < max_age:
+            results[m] = hit[:2]
+        else:
+            todo.append(m)
+
+    def one(m):
+        t = time.time()
+        try:
+            test_model(p, m, timeout=25)
+            return m, (True, f"{time.time() - t:.1f} 秒")
+        except Exception as e:
+            return m, (False, _why(e))
+
+    if todo:
+        with console.status(f"正在检测 {len(todo)} 个模型能不能用…", spinner="dots") as status:
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                for i, (m, r) in enumerate(pool.map(one, todo), 1):
+                    results[m] = r
+                    _CHECK_CACHE[(p["base_url"], p["api_key"], m)] = (*r, time.time())
+                    status.update(f"正在检测模型能不能用… {i}/{len(todo)}")
+    return results
+
+
+def choose_model(p, models, current=None, title="选择模型"):
+    """检测后让用户选模型：能用的排前面，默认选当前的（能用的话）或第一个能用的。选了不能用的会再确认。"""
+    status = check_models(p, models)
+    ordered = sorted(models, key=lambda m: not status[m][0])
+    rows = []
+    for m in ordered:
+        ok, why = status[m]
+        desc = Text("✓ 可用", style="green") if ok else Text(f"✗ {why}", style="red")
+        if ok:
+            desc.append(f"  {why}", style=DIM)
+        if m == current:
+            desc.append("   ● 当前", style=ACCENT)
+        rows.append((m, desc))
+    good = [m for m in ordered if status[m][0]]
+    if not good:
+        console.print(Text("  现在所有模型都检测不可用，可能是中转站或网络有问题，稍后再试。", style="red"))
+    default = ordered.index(current) + 1 if current in good else (ordered.index(good[0]) + 1 if good else 1)
+    while True:
+        model = ordered[ask_choice(title, rows, default) - 1]
+        if status[model][0]:
+            return model
+        ans = plain_prompt(HTML(f"  <ansired>{model} 刚才检测不可用（{status[model][1]}）</ansired>，确定要用吗？(y/n) : "))
+        if ans.strip().lower() in ("y", "yes", "是"):
+            return model
 
 
 def ask_choice(title, rows, default=1):
     """rows: [(名称, 说明)]，返回 1 开始的序号。"""
     table = Table(box=None, padding=(0, 2), show_header=False)
     for i, (name, desc) in enumerate(rows, 1):
-        table.add_row(Text(f"{i}", style=f"bold {ACCENT}"), Text(name, style="bold"), Text(desc, style=DIM))
+        table.add_row(Text(f"{i}", style=f"bold {ACCENT}"), Text(name, style="bold"),
+                      desc if isinstance(desc, Text) else Text(desc, style=DIM))
     console.print(Panel(table, title=title, title_align="left", border_style=ACCENT))
     while True:
         ans = plain_prompt(HTML(f"<b>输入序号</b> (直接回车 = {default}): ")).strip()
@@ -509,24 +596,14 @@ def setup_wizard(old=None):
         console.print(Text(f"  ✓ 连接成功，找到 {len(models)} 个模型\n", style="green"))
         break
 
-    # 第 3 步：默认模型（选完实际试一次，有的中转站会列出用不了的模型）
-    if kind == "anthropic":
-        default = models.index("claude-opus-5-5") + 1 if "claude-opus-5-5" in models else 1
-    else:
-        default = next((i for i, m in enumerate(models, 1) if "pro" in m.lower() and "/" not in m), 1)
+    # 第 3 步：默认模型（先检测哪些能用，有的中转站会列出用不了的模型）
     if old.get("model") in models:
-        default = models.index(old["model"]) + 1
-    while True:
-        n = ask_choice("第 3 步 · 选择默认模型", [(m, "") for m in models], default)
-        model = models[n - 1]
-        try:
-            with console.status(f"正在测试 {model}…", spinner="dots"):
-                test_model(draft, model)
-            break
-        except Exception as e:
-            console.print(Panel(Text(f"{model} 现在用不了（{e}），请换一个。"),
-                                title="模型不可用", border_style="red"))
-            default = 1 if n != 1 else min(2, len(models))
+        prefer = old["model"]
+    elif kind == "anthropic":
+        prefer = "claude-opus-5-5" if "claude-opus-5-5" in models else None
+    else:
+        prefer = next((m for m in models if "pro" in m.lower() and "/" not in m), None)
+    model = choose_model(draft, models, current=prefer, title="第 3 步 · 选择默认模型")
     draft["model"] = model
 
     # 第 4 步：名字
@@ -687,7 +764,7 @@ def show_help():
     table = Table(box=None, padding=(0, 2), show_header=False)
     for cmd, desc in [
         ("/api", "切换 / 添加 / 修改 / 删除 API 配置（比如 DeepSeek、Claude）"),
-        ("/model", "切换模型"),
+        ("/model", "切换模型（会先自动检测哪些现在能用）"),
         ("/old", "历史会话：打开、删除一个、删除全部"),
         ("/memory", "AI 记住的关于你的事：查看、添加、删除"),
         ("/copy", "复制上一条回答"),
@@ -1283,7 +1360,7 @@ def _execute_tool(call, state):
 
 # ───────────────────────── 对话 ─────────────────────────
 
-def stream_chat(base, key, model, messages, tools=None):
+def stream_chat(base, key, model, messages, tools=None, timeout=300):
     """逐块产出 ("reasoning"|"content"|"tool"|"usage", 数据)。"""
     payload = {
         "model": model,
@@ -1299,7 +1376,7 @@ def stream_chat(base, key, model, messages, tools=None):
                  "User-Agent": USER_AGENT},
     )
     got_data, other = False, []
-    with urllib.request.urlopen(req, timeout=300) as resp:
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
         for raw in resp:
             line = raw.decode("utf-8", "replace").strip()
             if not line.startswith("data:"):
@@ -2121,9 +2198,7 @@ def pick_model(cfg):
     except Exception as e:
         console.print(Panel(Text(f"获取模型列表失败：{e}"), title="出错了", border_style="red"), "\n")
         return
-    default = models.index(cfg["model"]) + 1 if cfg["model"] in models else 1
-    n = ask_choice("选择模型", [(m, "● 当前" if m == cfg["model"] else "") for m in models], default)
-    cfg["model"] = models[n - 1]
+    cfg["model"] = choose_model(cfg, models, current=cfg["model"])
     save_config(cfg)
     console.print(Text(f"  ✓ 已切换到 {cfg['model']}（下次打开也会用它）", style="green"), "\n")
 
