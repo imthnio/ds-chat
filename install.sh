@@ -4,6 +4,9 @@
 # 已经装过再运行一次 = 更新到最新版（也可以直接运行 ai --update），已有的设置会保留。
 set -e
 
+# 全部写在 main 里、最后一行才调用：curl | bash 下载到一半断网时，不会执行半截脚本
+main() {
+
 REPO_RAW="https://raw.githubusercontent.com/imthnio/ds-chat/main"
 APP_DIR="$HOME/.local/share/ds-chat"
 BIN_DIR="$HOME/.local/bin"
@@ -35,20 +38,36 @@ fi
 echo "    Python: $(python3 --version 2>&1)"
 
 # 2. 程序文件：在仓库目录里运行就用本地文件，否则从 GitHub 下载
+#    先放到临时文件夹并检查，没问题再替换，更新失败也不会把旧版弄坏
 mkdir -p "$APP_DIR"
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
 if [ -n "$SRC_DIR" ] && [ -f "$SRC_DIR/ds_chat.py" ] && [ -f "$SRC_DIR/requirements.txt" ]; then
-    cp "$SRC_DIR/ds_chat.py" "$SRC_DIR/requirements.txt" "$APP_DIR/"
+    cp "$SRC_DIR/ds_chat.py" "$SRC_DIR/requirements.txt" "$TMP_DIR/"
 else
     for f in ds_chat.py requirements.txt; do
-        curl -fsSL "$REPO_RAW/$f" -o "$APP_DIR/$f"
+        # 加时间戳绕过 GitHub 几分钟的缓存，刚发布的新版也能马上更新到
+        if ! curl -fsSL --retry 2 "$REPO_RAW/$f?t=$(date +%s)" -o "$TMP_DIR/$f"; then
+            red "下载失败：连不上 GitHub（raw.githubusercontent.com）。检查网络或代理后再试。"
+            exit 1
+        fi
     done
 fi
+if ! python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$TMP_DIR/ds_chat.py" 2>/dev/null; then
+    red "下载的文件不完整，已取消，原来的版本没有改动。请稍后再试。"
+    exit 1
+fi
+mv "$TMP_DIR/ds_chat.py" "$TMP_DIR/requirements.txt" "$APP_DIR/"
 echo "    程序位置: $APP_DIR"
 
 # 3. 独立的 Python 环境 + 界面库（PyPI 太慢时自动换清华镜像）
 blue "==> 安装界面库（第一次可能要一两分钟）"
-[ -x "$APP_DIR/venv/bin/python" ] || python3 -m venv "$APP_DIR/venv"
+# macOS 升级后旧环境可能坏掉，检查一下，坏了就重建
+if ! "$APP_DIR/venv/bin/python" -c 'import sys' >/dev/null 2>&1; then
+    rm -rf "$APP_DIR/venv"
+    python3 -m venv "$APP_DIR/venv"
+fi
 PIP="$APP_DIR/venv/bin/pip"
 if ! "$PIP" install -q --disable-pip-version-check --timeout 20 -r "$APP_DIR/requirements.txt"; then
     echo "    官方源失败，换用清华镜像重试…"
@@ -106,3 +125,7 @@ else
     echo
     green "输入  ai  开始使用。"
 fi
+
+}
+
+main "$@"

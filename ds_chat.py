@@ -10,6 +10,8 @@ import os
 import re
 import selectors
 import shutil
+import signal
+import subprocess
 import sys
 import threading
 import time
@@ -21,16 +23,18 @@ from prompt_toolkit.cursor_shapes import CursorShape
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style
+from prompt_toolkit.utils import get_cwidth
 from rich.console import Console, Group
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.padding import Padding
 from rich.panel import Panel
+from rich.segment import Segment
 from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
-VERSION = "1.1.1"
+VERSION = "1.1.2"
 INSTALL_CMD = "curl -fsSL https://raw.githubusercontent.com/imthnio/ds-chat/main/install.sh | bash"
 APP_DIR = os.path.expanduser("~/.local/share/ds-chat")
 CONFIG_DIR = os.path.expanduser("~/.config/ds-chat")
@@ -169,10 +173,10 @@ def setup_wizard(old=None):
                 models = fetch_models(base, key)
         except urllib.error.HTTPError as e:
             msg = "密钥不对，或者这个密钥没有权限" if e.code in (401, 403) else f"服务器返回错误 HTTP {e.code}"
-            console.print(Panel(msg + "\n请重新填写。", title="连接失败", border_style="red"))
+            console.print(Panel(Text(msg + "\n请重新填写。"), title="连接失败", border_style="red"))
             continue
         except Exception as e:
-            console.print(Panel(f"连不上 {base}\n{e}\n换一条线路再试试。", title="连接失败", border_style="red"))
+            console.print(Panel(Text(f"连不上 {base}\n{e}\n换一条线路再试试。"), title="连接失败", border_style="red"))
             continue
         if not models:
             console.print(Panel("连接成功，但这个密钥没有可用的模型，请检查分组设置。",
@@ -193,7 +197,7 @@ def setup_wizard(old=None):
                 test_model(base, key, model)
             break
         except Exception as e:
-            console.print(Panel(f"{model} 现在用不了（{e}），请换一个。",
+            console.print(Panel(Text(f"{model} 现在用不了（{e}），请换一个。"),
                                 title="模型不可用", border_style="red"))
             default = 1 if n != 1 else min(2, len(models))
 
@@ -233,10 +237,10 @@ def show_banner(cfg):
     info.add_column(style=DIM)
     info.add_column()
     info.add_row("模型", Text(cfg["model"], style=f"bold {ACCENT}"))
-    info.add_row("线路", re.sub(r"^https?://|/v1$", "", cfg["base_url"]))
+    info.add_row("线路", Text(re.sub(r"^https?://|/v1$", "", cfg["base_url"])))
     info.add_row("模式", Text("Agent · 可以运行命令、读写文件（改动前会问你）", style="yellow")
                  if cfg.get("agent", True) else Text("纯聊天", style=DIM))
-    info.add_row("目录", os.getcwd().replace(os.path.expanduser("~"), "~"))
+    info.add_row("目录", Text(_short(os.getcwd())))
     tips = Text.assemble(
         ("提示  ", DIM),
         ("/model", ACCENT), (" 切换模型   ", DIM),
@@ -315,6 +319,8 @@ def system_prompt():
         "- 运行命令、写文件前，用户会看到并确认；被拒绝就换个办法或询问用户。\n"
         "- 删除、覆盖重要文件、sudo、修改系统设置这类有风险的操作，先说明风险再做。\n"
         "- 不要运行需要键盘交互或一直不结束的命令（如 vim、top、不带 -c 的 ping）。\n"
+        f"- 每条命令都在 {os.getcwd()} 单独运行，上一条命令里的 cd 不会保留；需要换目录就在同一条命令里写 cd xxx && …。\n"
+        "- 命令没有终端可以输入密码，sudo 之类要密码的命令会直接失败；需要管理员权限时，把命令给用户，让用户自己在终端运行。\n"
         "- 任务完成后，简短告诉用户做了什么、结果如何。"
     )
 
@@ -331,19 +337,38 @@ def _clip(text):
 
 
 def _short(p):
-    return p.replace(os.path.expanduser("~"), "~", 1)
+    """把开头的主目录显示成 ~（只换开头，不换路径中间碰巧一样的部分）。"""
+    home = os.path.expanduser("~").rstrip("/")
+    if p == home or p.startswith(home + "/"):
+        return "~" + p[len(home):]
+    return p
+
+
+def _kill_group(proc):
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
 
 
 def tool_run_command(command):
-    import subprocess
+    # 单独的进程组：超时或按 Ctrl+C 时连同它启动的子进程一起结束。
+    # 也没有控制终端，sudo 这类要输密码的命令会直接报错，而不是藏在转圈后面卡住。
+    proc = subprocess.Popen(command, shell=True, executable="/bin/zsh", cwd=os.getcwd(),
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, errors="replace", start_new_session=True)
     try:
-        r = subprocess.run(command, shell=True, executable="/bin/zsh", cwd=os.getcwd(),
-                           stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                           errors="replace", timeout=COMMAND_TIMEOUT)
+        stdout, stderr = proc.communicate(timeout=COMMAND_TIMEOUT)
     except subprocess.TimeoutExpired:
-        return f"命令运行超过 {COMMAND_TIMEOUT} 秒，已停止。", False
-    out = (r.stdout or "") + (("\n[stderr]\n" + r.stderr) if r.stderr else "")
-    return f"退出码 {r.returncode}\n{out}".strip(), r.returncode == 0
+        _kill_group(proc)
+        stdout, stderr = proc.communicate()
+        return f"命令运行超过 {COMMAND_TIMEOUT} 秒，已停止。\n{stdout}{stderr}".strip(), False
+    except KeyboardInterrupt:
+        _kill_group(proc)
+        proc.wait()
+        raise
+    out = (stdout or "") + (("\n[stderr]\n" + stderr) if stderr else "")
+    return f"退出码 {proc.returncode}\n{out}".strip(), proc.returncode == 0
 
 
 def tool_read_file(path):
@@ -409,7 +434,7 @@ def preview_tool(name, args):
         body = "\n".join(lines[:15]) + (f"\n…（共 {len(lines)} 行）" if len(lines) > 15 else "")
         exists = "覆盖" if os.path.exists(_path(args.get("path"))) else "新建"
         console.print(Panel(Text(body, style=DIM),
-                            title=f"✎ {exists}文件 {_short(_path(args.get('path')))}",
+                            title=Text(f"✎ {exists}文件 {_short(_path(args.get('path')))}"),
                             title_align="left", border_style="yellow"))
     elif name == "edit_file":
         diff = Text()
@@ -417,7 +442,7 @@ def preview_tool(name, args):
             diff.append("- " + l + "\n", style="red")
         for l in args.get("new_text", "").splitlines()[:12]:
             diff.append("+ " + l + "\n", style="green")
-        console.print(Panel(diff, title=f"✎ 修改文件 {_short(_path(args.get('path')))}",
+        console.print(Panel(diff, title=Text(f"✎ 修改文件 {_short(_path(args.get('path')))}"),
                             title_align="left", border_style="yellow"))
     elif name == "read_file":
         console.print(Text(f"  📄 读取 {_short(_path(args.get('path')))}", style=DIM))
@@ -433,7 +458,7 @@ def approve(name, state):
         ans = plain_prompt(HTML(
             "  <b>允许吗？</b> <ansigreen>y</ansigreen> 允许 · "
             "<ansicyan>a</ansicyan> 本次打开期间都允许 · <ansired>n</ansired> 拒绝 : ")).strip().lower()
-        if ans in ("y", "yes", "是", ""):
+        if ans in ("y", "yes", "是"):
             return True
         if ans in ("a", "all"):
             state["auto_approve"] = True
@@ -453,6 +478,8 @@ def execute_tool(call, state):
         args = json.loads(call["function"].get("arguments") or "{}")
     except json.JSONDecodeError:
         return "参数不是合法的 JSON，请重试"
+    if not isinstance(args, dict):
+        return "参数必须是 JSON 对象，请重试"
     func = TOOL_FUNCS.get(name)
     if func is None:
         return f"没有叫 {name} 的工具"
@@ -497,11 +524,15 @@ def stream_chat(base, key, model, messages, tools=None):
         f"{base}/chat/completions", data=json.dumps(payload).encode(), method="POST",
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
     )
+    got_data, other = False, []
     with urllib.request.urlopen(req, timeout=300) as resp:
         for raw in resp:
             line = raw.decode("utf-8", "replace").strip()
             if not line.startswith("data:"):
+                if line and sum(map(len, other)) < 4000:
+                    other.append(line)
                 continue
+            got_data = True
             data = line[5:].strip()
             if data == "[DONE]":
                 break
@@ -509,6 +540,8 @@ def stream_chat(base, key, model, messages, tools=None):
                 chunk = json.loads(data)
             except json.JSONDecodeError:
                 continue
+            if chunk.get("error"):
+                raise RuntimeError(f"接口报错：{_error_text(chunk['error'])}")
             if chunk.get("usage"):
                 yield "usage", chunk["usage"]
             for choice in chunk.get("choices") or []:
@@ -519,6 +552,20 @@ def stream_chat(base, key, model, messages, tools=None):
                     yield "content", delta["content"]
                 for tc in delta.get("tool_calls") or []:
                     yield "tool", tc
+    if not got_data:
+        # 中转站有时用 200 状态码返回一段错误 JSON，而不是流式数据
+        body = "\n".join(other)
+        try:
+            body = _error_text(json.loads(body).get("error") or body)
+        except (json.JSONDecodeError, AttributeError):
+            pass
+        raise RuntimeError(f"接口没有返回内容：{body[:300] or '（空）'}")
+
+
+def _error_text(err):
+    if isinstance(err, dict):
+        return str(err.get("message") or err)
+    return str(err)
 
 
 def refresh_balance(cfg, stats):
@@ -533,6 +580,18 @@ def refresh_balance(cfg, stats):
             if stats["balance"] is None:
                 stats["balance"] = "n/a"
     threading.Thread(target=run, daemon=True).start()
+
+
+def md(text):
+    """Markdown 默认把单个换行当空格，聊天里会把一行一行的内容挤成一段；改成换行就是换行（代码块不动）。"""
+    out, fence = [], False
+    for line in text.split("\n"):
+        if line.lstrip().startswith(("```", "~~~")):
+            fence = not fence
+        elif not fence and line.strip() and not line.endswith("  "):
+            line += "  "
+        out.append(line)
+    return Markdown("\n".join(out), code_theme="monokai")
 
 
 def split_think(content):
@@ -557,8 +616,21 @@ def render(reasoning, answer, started, thinking_done_at, preparing_tool=False):
         secs = (thinking_done_at or time.time()) - started
         parts.append(Text(f"✻ 已思考 {secs:.1f} 秒", style=f"italic {DIM}"))
     if answer:
-        parts.append(Markdown(answer, code_theme="monokai"))
+        parts.append(md(answer))
     return Padding(Group(*parts), (0, 0, 0, 2))
+
+
+class _Tail:
+    """只显示最后 height 行。内容比窗口还高时，Live 刷新会把内容重复打印到屏幕上。"""
+
+    def __init__(self, renderable, height):
+        self.renderable, self.height = renderable, height
+
+    def __rich_console__(self, console, options):
+        lines = console.render_lines(self.renderable, options, pad=False)
+        for line in lines[-self.height:]:
+            yield from line
+            yield Segment.line()
 
 
 def stream_turn(cfg, messages, stats):
@@ -568,8 +640,14 @@ def stream_turn(cfg, messages, stats):
     calls = {}  # index -> {"id", "type", "function": {"name", "arguments"}}
     thinking_done_at = None
     tools = TOOLS if cfg.get("agent", True) else None
-    with Live(render("", "", started, None), console=console, refresh_per_second=12,
-              transient=False, vertical_overflow="visible") as live:
+    interrupted = False
+
+    def tail(r):
+        return _Tail(r, max(console.height - 3, 5))
+
+    # 流式输出时只显示末尾几行，结束后清掉、再把完整内容打印一次
+    with Live(tail(render("", "", started, None)), console=console, refresh_per_second=12,
+              transient=True, vertical_overflow="crop") as live:
         try:
             for kind, data in stream_chat(cfg["base_url"], cfg["api_key"], cfg["model"], messages, tools):
                 if kind == "reasoning":
@@ -589,19 +667,22 @@ def stream_turn(cfg, messages, stats):
                 reasoning = reasoning_field + think_tag
                 if (answer or calls) and thinking_done_at is None:
                     thinking_done_at = time.time()
-                live.update(render(reasoning, answer, started, thinking_done_at, bool(calls)))
+                live.update(tail(render(reasoning, answer, started, thinking_done_at, bool(calls))))
         except KeyboardInterrupt:
-            live.update(render("", split_think(raw_content)[1] + "\n\n*（已中断）*", started, None))
-            raise
-        think_tag, answer = split_think(raw_content)
-        # 定格：去掉转圈，只留“已思考”和回答
-        final = []
-        if reasoning_field + think_tag:
-            secs = (thinking_done_at or time.time()) - started
-            final.append(Text(f"✻ 已思考 {secs:.1f} 秒", style=f"italic {DIM}"))
-        if answer:
-            final.append(Markdown(answer, code_theme="monokai"))
-        live.update(Padding(Group(*final), (0, 0, 0, 2)))
+            interrupted = True
+    think_tag, answer = split_think(raw_content)
+    final = []
+    if reasoning_field + think_tag:
+        secs = (thinking_done_at or time.time()) - started
+        final.append(Text(f"✻ 已思考 {secs:.1f} 秒", style=f"italic {DIM}"))
+    if answer:
+        final.append(md(answer))
+    if interrupted:
+        final.append(Text("（已中断）", style=DIM))
+    if final:
+        console.print(Padding(Group(*final), (0, 0, 0, 2)))
+    if interrupted:
+        raise KeyboardInterrupt
     return answer.strip(), reasoning_field + think_tag, [calls[i] for i in sorted(calls)]
 
 
@@ -610,11 +691,17 @@ def ask(cfg, history, stats, state):
     tokens_before = stats["tokens"]
     try:
         for _ in range(MAX_STEPS):
-            messages = [{"role": "system", "content": system_prompt()}] + history
+            # 之前几轮的思考内容不再发回去（省 token，有的模型也不接受），只保留这一轮工具调用时的
+            last_user = max(i for i, m in enumerate(history) if m["role"] == "user")
+            past = [{k: v for k, v in m.items() if k != "reasoning_content"} if i < last_user else m
+                    for i, m in enumerate(history)]
+            messages = [{"role": "system", "content": system_prompt()}] + past
             answer, reasoning, calls = stream_turn(cfg, messages, stats)
             if not calls:
                 if answer:
                     history.append({"role": "assistant", "content": answer})
+                else:
+                    console.print(Text("  （AI 没有返回内容，可以再问一次）", style=DIM))
                 break
             msg = {"role": "assistant", "content": answer, "tool_calls": calls}
             if reasoning:
@@ -688,9 +775,11 @@ def list_sessions():
             continue
         try:
             with open(os.path.join(SESSIONS_DIR, name), encoding="utf-8") as f:
-                items.append(json.load(f))
+                item = json.load(f)
         except (OSError, json.JSONDecodeError):
             continue
+        if isinstance(item, dict) and item.get("id") and isinstance(item.get("messages"), list):
+            items.append(item)
     return sorted(items, key=lambda s: s.get("updated", 0), reverse=True)
 
 
@@ -718,11 +807,13 @@ def replay(history):
             console.print(Panel(Text(m["content"]), border_style=DIM, title="你", title_align="left"))
         elif m["role"] == "assistant":
             if m.get("content"):
-                console.print(Padding(Markdown(m["content"], code_theme="monokai"), (0, 0, 0, 2)))
+                console.print(Padding(md(m["content"]), (0, 0, 0, 2)))
             for call in m.get("tool_calls") or []:
                 try:
                     args = json.loads(call["function"].get("arguments") or "{}")
                 except json.JSONDecodeError:
+                    args = {}
+                if not isinstance(args, dict):
                     args = {}
                 name = call["function"]["name"]
                 what = args.get("command") or _short(_path(args.get("path")))
@@ -751,8 +842,10 @@ def history_menu(history, sess, cfg, stats):
             mark = " ● 当前" if s["id"] == sess.get("id") else ""
             table.add_row(Text(f"{i}", style=f"bold {ACCENT}"), Text(s.get("title") or "（无标题）", style="bold"),
                           Text(f"{_when(s.get('updated', 0))} · {rounds} 轮{mark}", style=DIM))
+        total = len(list_sessions())
+        sub = f"共 {total} 个" + ("，显示最近 30 个" if total > 30 else "")
         console.print(Panel(table, title="历史会话", title_align="left", border_style=ACCENT,
-                            subtitle=f"共 {len(list_sessions())} 个", subtitle_align="right"))
+                            subtitle=sub, subtitle_align="right"))
         ans = plain_prompt(HTML(
             "  <b>序号</b> 打开 · <b>d序号</b> 删除（如 d2）· <b>D</b> 删除全部 · 回车 返回 : ")).strip()
         if not ans:
@@ -806,7 +899,7 @@ def pick_model(cfg):
         with console.status("正在获取模型列表…", spinner="dots"):
             models = fetch_models(cfg["base_url"], cfg["api_key"])
     except Exception as e:
-        console.print(Panel(f"获取模型列表失败：{e}", title="出错了", border_style="red"), "\n")
+        console.print(Panel(Text(f"获取模型列表失败：{e}"), title="出错了", border_style="red"), "\n")
         return
     default = models.index(cfg["model"]) + 1 if cfg["model"] in models else 1
     n = ask_choice("选择模型", [(m, "● 当前" if m == cfg["model"] else "") for m in models], default)
@@ -855,7 +948,10 @@ def main():
         "bottom-toolbar.balance": "noreverse bold #4ade80 bg:default",
     })
     os.makedirs(APP_DIR, exist_ok=True)
-    session = PromptSession(history=FileHistory(os.path.join(APP_DIR, "history")), style=style,
+    input_history = os.path.join(APP_DIR, "history")
+    open(input_history, "a").close()
+    os.chmod(input_history, 0o600)  # 里面是你输入过的所有内容
+    session = PromptSession(history=FileHistory(input_history), style=style,
                             cursor=CursorShape.BLINKING_BEAM, reserve_space_for_menu=0,
                             erase_when_done=True, refresh_interval=1)
 
@@ -877,8 +973,8 @@ def main():
             right = ""
         else:
             right = f"余额 ${bal:.2f}  "
-        # 中文字符占两格，按显示宽度算右对齐的空格
-        used = sum(2 if ord(c) > 0x2E7F else 1 for c in left_accent + left + right)
+        # 按显示宽度（中文、⚡ 占两格）算右对齐的空格
+        used = get_cwidth(left_accent + left + right)
         return [
             ("class:box", "╰" + "─" * (width() - 2) + "╯\n"),
             ("class:accent", left_accent),
@@ -954,7 +1050,10 @@ def main():
             if cmd == "/help":
                 show_help()
                 continue
-        except KeyboardInterrupt:
+            if re.fullmatch(r"/[a-z]+", cmd):
+                console.print(Text(f"  没有 {text} 这个命令，输入 /help 查看全部命令\n", style="red"))
+                continue
+        except (KeyboardInterrupt, EOFError):
             console.print()
             continue
         before = len(history)
@@ -962,7 +1061,6 @@ def main():
         console.print()
         try:
             ask(cfg, history, stats, state)
-            save_session(sess, history, cfg)
             refresh_balance(cfg, stats)
         except urllib.error.HTTPError as e:
             del history[before:]
@@ -974,11 +1072,18 @@ def main():
                 tip = "\n密钥无效或没有权限，输入 /setup 重新填写。"
             elif e.code == 429:
                 tip = "\n请求太频繁或余额不足，稍等一下再试。"
-            console.print(Panel(f"HTTP {e.code}：{detail}{tip}", title="出错了", border_style="red"), "\n")
+            console.print(Panel(Text(f"HTTP {e.code}：{detail}{tip}"), title="出错了", border_style="red"), "\n")
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             del history[before:]
             tip = "输入 /line 切换到备用线路再试试。" if cfg.get("backup_url") else "检查网络，或输入 /setup 换线路。"
-            console.print(Panel(f"网络连接失败：{e}\n{tip}", title="出错了", border_style="red"), "\n")
+            console.print(Panel(Text(f"网络连接失败：{e}\n{tip}"), title="出错了", border_style="red"), "\n")
+        except Exception as e:  # 兜底：出什么错都不退出程序，对话也不丢
+            del history[before:]
+            console.print(Panel(Text(f"{e}\n（{type(e).__name__}）"), title="出错了", border_style="red"), "\n")
+        try:
+            save_session(sess, history, cfg)
+        except OSError as e:
+            console.print(Text(f"  会话保存失败：{e}\n", style="red"))
     console.print(Text("\n  再见 👋\n", style=ACCENT))
 
 
