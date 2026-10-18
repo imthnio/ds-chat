@@ -43,7 +43,7 @@ from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
-VERSION = "1.3.5"
+VERSION = "1.3.6"
 # 有的中转站会拦截 Python 默认的 User-Agent（返回 403），所以带上自己的名字
 USER_AGENT = f"ds-chat/{VERSION}"
 INSTALL_CMD = "curl -fsSL https://raw.githubusercontent.com/imthnio/ds-chat/main/install.sh | bash"
@@ -674,7 +674,7 @@ def show_banner(cfg):
         ("/model", ACCENT), (" 切换模型   ", DIM),
         ("/his", ACCENT), (" 历史会话   ", DIM),
         ("/memory", ACCENT), (" 记忆   ", DIM),
-        ("/clear", ACCENT), (" 新对话   ", DIM),
+        ("/new", ACCENT), (" 新对话   ", DIM),
         ("/help", ACCENT), (" 帮助   ", DIM),
         ("/exit", ACCENT), (" 退出", DIM),
     )
@@ -695,7 +695,7 @@ def show_help():
         ("/bar", "打开 / 关闭屏幕顶部菜单栏的 💰余额"),
         ("/agent", "打开 / 关闭 Agent 模式（AI 能否操作电脑）"),
         ("/line", "切换到备用线路（主线路连不上时用）"),
-        ("/clear", "开始新对话（当前对话会留在历史里）"),
+        ("/new", "开始新对话（当前对话会留在历史里）"),
         ("/setup", "修改当前这套配置的线路、密钥、默认模型"),
         ("ai -c", "（在终端里运行）接着上次的对话聊"),
         ("ai --update", "（在终端里运行）更新到最新版"),
@@ -2250,7 +2250,7 @@ def main():
                 if history_menu(history, sess, cfg, stats):
                     state["auto_approve"] = False
                 continue
-            if cmd in ("/clear", "/new"):
+            if cmd in ("/new", "/clear"):
                 history.clear()
                 sess.clear()
                 stats["tokens"] = 0
