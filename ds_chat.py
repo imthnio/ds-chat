@@ -30,7 +30,7 @@ from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 INSTALL_CMD = "curl -fsSL https://raw.githubusercontent.com/imthnio/ds-chat/main/install.sh | bash"
 APP_DIR = os.path.expanduser("~/.local/share/ds-chat")
 CONFIG_DIR = os.path.expanduser("~/.config/ds-chat")
@@ -240,7 +240,7 @@ def show_banner(cfg):
     tips = Text.assemble(
         ("提示  ", DIM),
         ("/model", ACCENT), (" 切换模型   ", DIM),
-        ("/history", ACCENT), (" 历史会话   ", DIM),
+        ("/his", ACCENT), (" 历史会话   ", DIM),
         ("/agent", ACCENT), (" 开关 Agent   ", DIM),
         ("/clear", ACCENT), (" 新对话   ", DIM),
         ("/help", ACCENT), (" 帮助   ", DIM),
@@ -255,7 +255,7 @@ def show_help():
     table = Table(box=None, padding=(0, 2), show_header=False)
     for cmd, desc in [
         ("/model", "切换模型"),
-        ("/history", "历史会话：打开、删除一个、删除全部"),
+        ("/his", "历史会话：打开、删除一个、删除全部"),
         ("/agent", "打开 / 关闭 Agent 模式（AI 能否操作电脑）"),
         ("/line", "切换到备用线路（主线路连不上时用）"),
         ("/clear", "开始新对话（当前对话会留在历史里）"),
@@ -739,7 +739,7 @@ def replay(history):
 
 
 def history_menu(history, sess, cfg, stats):
-    """/history：列出会话，可打开、删除一个、删除全部。返回 True 表示换了会话。"""
+    """/his：列出会话，可打开、删除一个、删除全部。返回 True 表示换了会话。"""
     while True:
         items = list_sessions()[:30]
         if not items:
@@ -919,7 +919,7 @@ def main():
         try:
             if cmd in ("/exit", "/quit", "exit", "quit"):
                 break
-            if cmd in ("/history", "/h", "/resume", "/sessions"):
+            if cmd in ("/his", "/history", "/h", "/resume", "/sessions"):
                 if history_menu(history, sess, cfg, stats):
                     state["auto_approve"] = False
                 continue
