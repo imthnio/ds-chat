@@ -43,7 +43,7 @@ from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
-VERSION = "1.3.6"
+VERSION = "1.3.7"
 # 有的中转站会拦截 Python 默认的 User-Agent（返回 403），所以带上自己的名字
 USER_AGENT = f"ds-chat/{VERSION}"
 INSTALL_CMD = "curl -fsSL https://raw.githubusercontent.com/imthnio/ds-chat/main/install.sh | bash"
@@ -672,7 +672,7 @@ def show_banner(cfg):
         ("提示  ", DIM),
         ("/api", ACCENT), (" 切换配置   ", DIM),
         ("/model", ACCENT), (" 切换模型   ", DIM),
-        ("/his", ACCENT), (" 历史会话   ", DIM),
+        ("/old", ACCENT), (" 历史会话   ", DIM),
         ("/memory", ACCENT), (" 记忆   ", DIM),
         ("/new", ACCENT), (" 新对话   ", DIM),
         ("/help", ACCENT), (" 帮助   ", DIM),
@@ -688,7 +688,7 @@ def show_help():
     for cmd, desc in [
         ("/api", "切换 / 添加 / 修改 / 删除 API 配置（比如 DeepSeek、Claude）"),
         ("/model", "切换模型"),
-        ("/his", "历史会话：打开、删除一个、删除全部"),
+        ("/old", "历史会话：打开、删除一个、删除全部"),
         ("/memory", "AI 记住的关于你的事：查看、添加、删除"),
         ("/copy", "复制上一条回答"),
         ("/compact", "把前面的对话压缩成摘要（太长时也会自动压缩）"),
@@ -1838,7 +1838,7 @@ def ask(cfg, history, stats, state):
                 with VIEW.busy("对话太长了，正在把前面的内容压缩成摘要…"):
                     done = compact(cfg, history)
                 if done:
-                    console.print(Text("  🗜  对话太长，已把前面的内容压缩成摘要（输入 /his 打开旧会话仍能看到原文）", style=DIM))
+                    console.print(Text("  🗜  对话太长，已把前面的内容压缩成摘要（输入 /old 打开旧会话仍能看到原文）", style=DIM))
             try:
                 answer, reasoning, calls, extra = stream_turn(cfg, history, stats)
             except Exception as e:
@@ -2010,7 +2010,7 @@ def replay(history):
 
 
 def history_menu(history, sess, cfg, stats):
-    """/his：列出会话，可打开、删除一个、删除全部。返回 True 表示换了会话。"""
+    """/old：列出会话，可打开、删除一个、删除全部。返回 True 表示换了会话。"""
     while True:
         items = list_sessions()[:30]
         if not items:
@@ -2246,7 +2246,7 @@ def main():
         try:
             if cmd in ("/exit", "/quit", "exit", "quit"):
                 break
-            if cmd in ("/his", "/history", "/h", "/resume", "/sessions"):
+            if cmd in ("/old", "/his", "/history", "/h", "/resume", "/sessions"):
                 if history_menu(history, sess, cfg, stats):
                     state["auto_approve"] = False
                 continue
