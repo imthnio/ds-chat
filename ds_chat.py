@@ -53,13 +53,48 @@ PRESET_LINES = [
 ACCENT = "#7aa2ff"
 DIM = "grey50"
 
-LOGO = r"""
- ██████╗ ███████╗███████╗██████╗ ███████╗███████╗███████╗██╗  ██╗
- ██╔══██╗██╔════╝██╔════╝██╔══██╗██╔════╝██╔════╝██╔════╝██║ ██╔╝
- ██║  ██║█████╗  █████╗  ██████╔╝███████╗█████╗  █████╗  █████╔╝
- ██║  ██║██╔══╝  ██╔══╝  ██╔═══╝ ╚════██║██╔══╝  ██╔══╝  ██╔═██╗
- ██████╔╝███████╗███████╗██║     ███████║███████╗███████╗██║  ██╗
- ╚═════╝ ╚══════╝╚══════╝╚═╝     ╚══════╝╚══════╝╚══════╝╚═╝  ╚═╝
+# DeepSeek logo - 大肥鱼
+LOGO_DEEPSEEK = r"""
+    ╭────────────────────────────────╮
+    │                                │
+    │        。・°°・。              │
+    │      。°       °。    ><(((°>  │
+    │    。°   ●   ●   °。           │
+    │   °      ﹏﹏      °  DeepSeek │
+    │    °。         。°             │
+    │      °。    。°                │
+    │        °°°°                    │
+    │                                │
+    ╰────────────────────────────────╯
+"""
+
+# Claude logo - 橘色小机器人
+LOGO_CLAUDE = r"""
+    ╭────────────────────────────────╮
+    │                                │
+    │          ┌─────┐               │
+    │         ╱  ● ●  ╲              │
+    │        │    ▽    │   Claude    │
+    │         ╲  ~~~  ╱              │
+    │          └──┬──┘               │
+    │          ╱  │  ╲               │
+    │         ╱   │   ╲              │
+    │                                │
+    ╰────────────────────────────────╯
+"""
+
+# OpenAI / Codex logo
+LOGO_OPENAI = r"""
+    ╭────────────────────────────────╮
+    │                                │
+    │        ◢◣◢◣                    │
+    │       ◢    ◣                   │
+    │      ◢  ●●  ◣    OpenAI        │
+    │     ◢   ▼   ◣                  │
+    │      ◣    ◢                    │
+    │       ◣◢◣◢                     │
+    │                                │
+    ╰────────────────────────────────╯
 """
 
 if sys.platform == "darwin":
@@ -504,8 +539,21 @@ def profile_menu(cfg):
 
 # ───────────────────────── 界面 ─────────────────────────
 
-def gradient_logo():
-    lines = LOGO.strip("\n").splitlines()
+def get_logo_by_model(model_name):
+    """根据模型名称返回对应的 logo"""
+    model_lower = model_name.lower()
+    if "claude" in model_lower:
+        return LOGO_CLAUDE
+    elif "codex" in model_lower or "gpt" in model_lower:
+        return LOGO_OPENAI
+    else:
+        # 默认用 DeepSeek logo
+        return LOGO_DEEPSEEK
+
+
+def gradient_logo(logo_text):
+    """根据传入的 logo 文本生成渐变效果"""
+    lines = logo_text.strip("\n").splitlines()
     start, end = (0x5B, 0x8C, 0xFF), (0xB4, 0x7C, 0xFF)
     out = Text()
     width = max(len(l) for l in lines)
@@ -520,10 +568,13 @@ def gradient_logo():
 
 def show_banner(cfg):
     console.clear()
+    logo = get_logo_by_model(cfg["model"])
     if console.width >= 68:
-        console.print(gradient_logo())
+        console.print(gradient_logo(logo))
     else:
-        console.print(Text("DeepSeek", style=f"bold {ACCENT}"), "\n")
+        # 小屏幕显示模型名
+        model_display = cfg["model"].split("-")[0].upper()
+        console.print(Text(model_display, style=f"bold {ACCENT}"), "\n")
     info = Table.grid(padding=(0, 2))
     info.add_column(style=DIM)
     info.add_column()
