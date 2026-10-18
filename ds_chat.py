@@ -7,9 +7,13 @@ Agent 模式下 AI 可以运行命令、读写文件；运行命令和改文件�
 配置保存在 ~/.config/ds-chat/config.json，第一次运行时会引导填写。
 """
 import asyncio
+import base64
+import gzip
+import html
 import json
 import os
 import re
+import select
 import selectors
 import shutil
 import signal
@@ -18,7 +22,10 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+import zipfile
+from contextlib import contextmanager
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.cursor_shapes import CursorShape
@@ -36,7 +43,7 @@ from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
-VERSION = "1.2.1"
+VERSION = "1.3.0"
 # 有的中转站会拦截 Python 默认的 User-Agent（返回 403），所以带上自己的名字
 USER_AGENT = f"ds-chat/{VERSION}"
 INSTALL_CMD = "curl -fsSL https://raw.githubusercontent.com/imthnio/ds-chat/main/install.sh | bash"
@@ -53,49 +60,99 @@ PRESET_LINES = [
 ACCENT = "#7aa2ff"
 DIM = "grey50"
 
-# DeepSeek logo - 大肥鱼
-LOGO_DEEPSEEK = r"""
-    ╭────────────────────────────────╮
-    │                                │
-    │        。・°°・。              │
-    │      。°       °。    ><(((°>  │
-    │    。°   ●   ●   °。           │
-    │   °      ﹏﹏      °  DeepSeek │
-    │    °。         。°             │
-    │      °。    。°                │
-    │        °°°°                    │
-    │                                │
-    ╰────────────────────────────────╯
-"""
-
-# Claude logo - 橘色小机器人
-LOGO_CLAUDE = r"""
-    ╭────────────────────────────────╮
-    │                                │
-    │          ┌─────┐               │
-    │         ╱  ● ●  ╲              │
-    │        │    ▽    │   Claude    │
-    │         ╲  ~~~  ╱              │
-    │          └──┬──┘               │
-    │          ╱  │  ╲               │
-    │         ╱   │   ╲              │
-    │                                │
-    ╰────────────────────────────────╯
-"""
-
-# OpenAI / Codex logo
-LOGO_OPENAI = r"""
-    ╭────────────────────────────────╮
-    │                                │
-    │        ◢◣◢◣                    │
-    │       ◢    ◣                   │
-    │      ◢  ●●  ◣    OpenAI        │
-    │     ◢   ▼   ◣                  │
-    │      ◣    ◢                    │
-    │       ◣◢◣◢                     │
-    │                                │
-    ╰────────────────────────────────╯
-"""
+# 顶部 logo：按桌面上的图片取色画成的像素图，每个字符是一个像素，空格是透明。
+# 画的时候上下两行像素合成一个字符（▀ 上半块用前景色、下半块用背景色）。
+LOGOS = {
+    # Claude：橘色小螃蟹（Claw'd），原图是 12x8 的像素画，这里放大 2 倍
+    'claude': ({'o': '#da7758', 'k': '#000000'}, [
+        '    oooooooooooooooo    ',
+        '    oooooooooooooooo    ',
+        '    ookkooooooookkoo    ',
+        '    ookkooooooookkoo    ',
+        'oooooooooooooooooooooooo',
+        'oooooooooooooooooooooooo',
+        'oooooooooooooooooooooooo',
+        'oooooooooooooooooooooooo',
+        '    oooooooooooooooo    ',
+        '    oooooooooooooooo    ',
+        '    oooooooooooooooo    ',
+        '    oooooooooooooooo    ',
+        '    oo  oo    oo  oo    ',
+        '    oo  oo    oo  oo    ',
+        '    oo  oo    oo  oo    ',
+        '    oo  oo    oo  oo    ',
+    ]),
+    # DeepSeek：蓝色鲸鱼
+    'deepseek': ({'d': '#4d6bfe', 'a': '#ffffff'}, [
+        '                    d         ',
+        '       dddddddd     dd        ',
+        '    ddddddddddd     ddd      d',
+        '   ddddddddddddd    dddd  dddd',
+        '  ddddddddddddddd   dddddddddd',
+        ' ddddddddddddddddd   dddddddd ',
+        ' dddddddddddddddddd   dddddd  ',
+        'dddddddddddddddddddd ddddd    ',
+        'ddaaaaadddddddddddddddddd     ',
+        'ddaaaaaaadddddddddddddddd     ',
+        'ddaaaaaaaadddddddaadddddd     ',
+        'ddaaaaaaaaaddddddaadddddd     ',
+        'dddaaaaaaaaadddddddddddd      ',
+        'dddaaaaaaaaaaddddddddddd      ',
+        ' dddaaaaaaaaaaddddddddd       ',
+        ' dddaaaaaaaaaaddddddddd       ',
+        '  dddaaaaadaaaaddddddd        ',
+        '   dddaaaadddaaaddddd         ',
+        '    ddddaaddddaaadddddd       ',
+        '     ddddddddddddddddddd      ',
+        '      dddddddddddd            ',
+        '        ddddddd               ',
+    ]),
+    # Codex：紫到蓝渐变的云，中间白色 >_
+    'codex': ({'a': '#c4b5fd', 'b': '#b1a6fe', 'c': '#9d98fe', 'd': '#8a8afe', 'e': '#767cfe', 'f': '#636efe', 'g': '#5462fe', 'w': '#ffffff'}, [
+        '         aaaaa            ',
+        '       aaaaaaaa           ',
+        '      aaaaaaaaaaaaaaa     ',
+        '     aaaaaaaaaaaaaaaaa    ',
+        '     bbbbbbbbbbbbbbbbbb   ',
+        '   bbbbbbbbbbbbbbbbbbbbb  ',
+        '  bbbbbbbbbbbbbbbbbbbbbb  ',
+        ' bbbbbbbbbbbbbbbbbbbbbbbb ',
+        'ccccccwwccccccccccccccccc ',
+        'cccccccwwccccccccccccccc  ',
+        'ccccccccwwccccccccccccccc ',
+        'cccccccccwwcccccccccccccc ',
+        'dddddddddwwddddddddddddddd',
+        'ddddddddwwdddddddddddddddd',
+        ' ddddddwwddddddddddddddddd',
+        ' eeeeewweeeeewwwwwwweeeeee',
+        '  eeeeeeeeeeewwwwwwweeeeee',
+        ' eeeeeeeeeeeeeeeeeeeeeeeee',
+        ' eeeeeeeeeeeeeeeeeeeeeeee ',
+        '  ffffffffffffffffffffff  ',
+        '  fffffffffffffffffffff   ',
+        '   ffffffffffffffffff     ',
+        '    fffffffffffffffff     ',
+        '     ggggggggggggggg      ',
+        '          ggggggggg       ',
+        '            gggggg        ',
+    ]),
+    # 其他模型：四角星
+    'other': ({'a': '#c4b5fd', 'b': '#a5a0fe', 'c': '#8a8afe', 'd': '#7a90ff', 'e': '#7aa2ff'}, [
+        '      a      ',
+        '      a      ',
+        '     bbb     ',
+        '     bbb     ',
+        '    ccccc    ',
+        '  ddddddddd  ',
+        'eeeeeeeeeeeee',
+        '  ddddddddd  ',
+        '    ccccc    ',
+        '     bbb     ',
+        '     bbb     ',
+        '      a      ',
+        '      a      ',
+    ]),
+}
 
 if sys.platform == "darwin":
     # macOS 的 kqueue 不支持 /dev/tty（curl | bash 安装时就是从它读键盘），改用 select
@@ -212,9 +269,12 @@ def to_anthropic_messages(history):
         else:
             out.append({"role": role, "content": list(blocks)})
 
+    def image(img):
+        return {"type": "image", "source": {"type": "base64", "media_type": img["media_type"], "data": img["data"]}}
+
     for m in history:
         if m["role"] == "user":
-            add("user", [{"type": "text", "text": m["content"]}])
+            add("user", [{"type": "text", "text": m["content"]}] + [image(x) for x in m.get("images") or []])
         elif m["role"] == "assistant":
             if m.get("anthropic_content"):
                 add("assistant", m["anthropic_content"])
@@ -230,8 +290,10 @@ def to_anthropic_messages(history):
             if blocks:
                 add("assistant", blocks)
         elif m["role"] == "tool":
-            add("user", [{"type": "tool_result", "tool_use_id": m["tool_call_id"],
-                          "content": m["content"] or "（无输出）"}])
+            content = m["content"] or "（无输出）"
+            if m.get("images"):
+                content = [{"type": "text", "text": content}] + [image(x) for x in m["images"]]
+            add("user", [{"type": "tool_result", "tool_use_id": m["tool_call_id"], "content": content}])
     return out
 
 
@@ -539,49 +601,59 @@ def profile_menu(cfg):
 
 # ───────────────────────── 界面 ─────────────────────────
 
-def get_logo_by_model(model_name):
-    """根据模型名称返回对应的 logo"""
-    model_lower = model_name.lower()
-    if "claude" in model_lower:
-        return LOGO_CLAUDE
-    elif "codex" in model_lower or "gpt" in model_lower:
-        return LOGO_OPENAI
-    else:
-        # 默认用 DeepSeek logo
-        return LOGO_DEEPSEEK
+def logo_key(model):
+    m = model.lower()
+    if "claude" in m:
+        return "claude"
+    if "deepseek" in m:
+        return "deepseek"
+    if any(k in m for k in ("codex", "gpt", "openai", "o1", "o3", "o4")):
+        return "codex"
+    return "other"
 
 
-def gradient_logo(logo_text):
-    """根据传入的 logo 文本生成渐变效果"""
-    lines = logo_text.strip("\n").splitlines()
-    start, end = (0x5B, 0x8C, 0xFF), (0xB4, 0x7C, 0xFF)
+def brand_name(model):
+    return {"claude": "Claude", "deepseek": "DeepSeek", "codex": "Codex"}.get(
+        logo_key(model), re.split(r"[-_/:.]", model)[0].capitalize())
+
+
+def draw_logo(key):
+    palette, rows = LOGOS[key]
+    width = max(map(len, rows))
+    rows = [r.ljust(width) for r in rows] + ([" " * width] if len(rows) % 2 else [])
     out = Text()
-    width = max(len(l) for l in lines)
-    for line in lines:
-        for i, ch in enumerate(line):
-            t = i / max(width - 1, 1)
-            r, g, b = (int(s + (e - s) * t) for s, e in zip(start, end))
-            out.append(ch, style=f"bold #{r:02x}{g:02x}{b:02x}")
+    for top, bottom in zip(rows[::2], rows[1::2]):
+        for t, b in zip(top, bottom):
+            if t == " " and b == " ":
+                out.append(" ")
+            elif b == " ":
+                out.append("▀", style=palette[t])
+            elif t == " ":
+                out.append("▄", style=palette[b])
+            else:
+                out.append("▀", style=f"{palette[t]} on {palette[b]}")
         out.append("\n")
+    out.rstrip()
     return out
 
 
 def show_banner(cfg):
     console.clear()
-    logo = get_logo_by_model(cfg["model"])
-    if console.width >= 68:
-        console.print(gradient_logo(logo))
-    else:
-        # 小屏幕显示模型名
-        model_display = cfg["model"].split("-")[0].upper()
-        console.print(Text(model_display, style=f"bold {ACCENT}"), "\n")
+    key = logo_key(cfg["model"])
+    title = Text.assemble((brand_name(cfg["model"]) + "\n", f"bold {LOGOS[key][0][next(iter(LOGOS[key][0]))]}"),
+                          (cfg["model"] + "\n", "bold"), (f"ds-chat {VERSION}", DIM))
+    head = Table.grid(padding=(0, 4))
+    logo = draw_logo(key)
+    pad = max(0, (len(logo.plain.splitlines()) - 3) // 2)
+    head.add_row(logo, Text("\n" * pad) + title)
+    console.print(Padding(head, (1, 0, 1, 2)))
     info = Table.grid(padding=(0, 2))
     info.add_column(style=DIM)
     info.add_column()
     info.add_row("配置", Text.assemble((cfg["name"], f"bold {ACCENT}"), (f"   {kind_label(cfg)}", DIM)))
     info.add_row("模型", Text(cfg["model"], style=f"bold {ACCENT}"))
     info.add_row("线路", Text(host(cfg["base_url"])))
-    info.add_row("模式", Text("Agent · 可以运行命令、读写文件（改动前会问你）", style="yellow")
+    info.add_row("模式", Text("Agent · 能上网、看图、读文档、运行命令、读写文件（改动前会问你）", style="yellow")
                  if STORE.get("agent", True) else Text("纯聊天", style=DIM))
     info.add_row("目录", Text(_short(os.getcwd())))
     tips = Text.assemble(
@@ -589,7 +661,7 @@ def show_banner(cfg):
         ("/api", ACCENT), (" 切换配置   ", DIM),
         ("/model", ACCENT), (" 切换模型   ", DIM),
         ("/his", ACCENT), (" 历史会话   ", DIM),
-        ("/agent", ACCENT), (" 开关 Agent   ", DIM),
+        ("/memory", ACCENT), (" 记忆   ", DIM),
         ("/clear", ACCENT), (" 新对话   ", DIM),
         ("/help", ACCENT), (" 帮助   ", DIM),
         ("/exit", ACCENT), (" 退出", DIM),
@@ -605,6 +677,10 @@ def show_help():
         ("/api", "切换 / 添加 / 修改 / 删除 API 配置（比如 DeepSeek、Claude）"),
         ("/model", "切换模型"),
         ("/his", "历史会话：打开、删除一个、删除全部"),
+        ("/memory", "AI 记住的关于你的事：查看、添加、删除"),
+        ("/copy", "复制上一条回答"),
+        ("/compact", "把前面的对话压缩成摘要（太长时也会自动压缩）"),
+        ("/bar", "打开 / 关闭屏幕顶部菜单栏的 💲余额"),
         ("/agent", "打开 / 关闭 Agent 模式（AI 能否操作电脑）"),
         ("/line", "切换到备用线路（主线路连不上时用）"),
         ("/clear", "开始新对话（当前对话会留在历史里）"),
@@ -613,6 +689,7 @@ def show_help():
         ("ai --update", "（在终端里运行）更新到最新版"),
         ("/help", "显示这个帮助"),
         ("/exit", "退出（也可以按 Ctrl+D）"),
+        ("拖图片进窗口", "把图片或截图拖进来，AI 就能看到"),
         ("Esc 然后 回车", "换行（写多行内容）"),
         ("Ctrl+C", "回答或操作时按：停止"),
     ]:
@@ -637,7 +714,7 @@ def _tool(name, desc, props, required):
 TOOLS = [
     _tool("run_command", "在用户的 Mac 上运行一条 shell 命令（zsh），返回输出。不能运行需要键盘交互的命令。",
           {"command": {"type": "string", "description": "要运行的命令"}}, ["command"]),
-    _tool("read_file", "读取一个文本文件的内容。",
+    _tool("read_file", "读取文件内容。支持文本文件，以及 PDF、Word（doc/docx）、Excel（xlsx）、PPT（pptx）、RTF 等文档。",
           {"path": {"type": "string", "description": "文件路径，可以用 ~ 表示主目录"}}, ["path"]),
     _tool("list_dir", "列出一个文件夹里的文件和子文件夹（含大小、修改时间）。",
           {"path": {"type": "string", "description": "文件夹路径，默认当前目录"}}, []),
@@ -647,10 +724,22 @@ TOOLS = [
     _tool("edit_file", "把文件里的一段文字替换成新文字（old_text 必须在文件里只出现一次）。",
           {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}},
           ["path", "old_text", "new_text"]),
+    _tool("web_search", "用搜索引擎搜索网页，返回标题、链接和摘要。查新闻、最新信息、报错原因、价格等都先用它。",
+          {"query": {"type": "string", "description": "搜索关键词"}}, ["query"]),
+    _tool("web_fetch", "打开一个网址，返回网页正文（去掉广告和代码）。搜索后想看详细内容时用。",
+          {"url": {"type": "string", "description": "完整网址，http 或 https 开头"}}, ["url"]),
+    _tool("view_image", "查看一张图片（png、jpg、heic、gif、webp 等，PDF 只看第一页）。",
+          {"path": {"type": "string", "description": "图片路径"}}, ["path"]),
+    _tool("screenshot", "截取用户整个屏幕并查看，用来了解用户正在看什么、某个 App 的状态。", {}, []),
+    _tool("remember", "把关于用户的长期有用信息记下来（偏好、习惯、常用路径、项目情况等），以后的对话里都能看到。"
+          "用户说“记住…”或透露了以后也有用的信息时使用。不要记密码、密钥这类敏感信息。",
+          {"fact": {"type": "string", "description": "要记住的一句话"}}, ["fact"]),
+    _tool("forget_memory", "删除一条记住的信息（编号见系统提示里的“你记住的事”）。",
+          {"number": {"type": "string", "description": "要删除的编号，如 2"}}, ["number"]),
 ]
 
-# 这些工具会改动电脑，执行前要用户同意
-NEEDS_APPROVAL = {"run_command", "write_file", "edit_file"}
+# 这些工具会改动电脑或看你的屏幕，执行前要用户同意
+NEEDS_APPROVAL = {"run_command", "write_file", "edit_file", "screenshot"}
 
 
 def system_prompt():
@@ -666,7 +755,14 @@ def system_prompt():
         "- 不要运行需要键盘交互或一直不结束的命令（如 vim、top、不带 -c 的 ping）。\n"
         f"- 每条命令都在 {os.getcwd()} 单独运行，上一条命令里的 cd 不会保留；需要换目录就在同一条命令里写 cd xxx && …。\n"
         "- 命令没有终端可以输入密码，sudo 之类要密码的命令会直接失败；需要管理员权限时，把命令给用户，让用户自己在终端运行。\n"
+        "- 遇到需要最新信息、你不确定的事实、报错原因，先用 web_search 搜索，必要时用 web_fetch 打开网页看详情，"
+        "回答时附上信息来源的网址。\n"
+        "- 用户消息里如果附了图片，你能直接看到；需要看某张图片文件用 view_image，需要看用户屏幕用 screenshot。\n"
+        "- 你可以通过命令操作这台 Mac：open -a \"App 名\" 打开 App，open 网址 用浏览器打开网页，"
+        "osascript -e 'display notification \"内容\" with title \"标题\"' 弹通知，pbcopy 复制到剪贴板，say 朗读。\n"
+        "- 用户说了以后也有用的个人信息或偏好（或者说“记住…”），用 remember 记下来；不要记密码和密钥。\n"
         "- 任务完成后，简短告诉用户做了什么、结果如何。"
+        + memory_prompt()
     )
 
 
@@ -720,6 +816,11 @@ def tool_read_file(path):
     p = _path(path)
     if os.path.isdir(p):
         return f"{p} 是文件夹，请用 list_dir", False
+    if os.path.splitext(p)[1].lower() in IMAGE_EXTS:
+        return f"{p} 是图片，请用 view_image 查看", False
+    doc = read_document(p)
+    if doc is not None:
+        return doc, True
     with open(p, "rb") as f:
         data = f.read(400_000)
     if b"\0" in data[:4000]:
@@ -740,6 +841,274 @@ def tool_list_dir(path=None):
         when = time.strftime("%Y-%m-%d %H:%M", time.localtime(st.st_mtime))
         rows.append(f"{kind} {name}  ({st.st_size} 字节, {when})")
     return f"{p}：\n" + ("\n".join(rows) or "（空文件夹）"), True
+
+
+DOC_TEXTUTIL = {".doc", ".docx", ".rtf", ".rtfd", ".odt", ".html", ".htm", ".webarchive", ".wordml"}
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".heif", ".bmp", ".tif", ".tiff"}
+
+
+def read_document(p):
+    """PDF、Word、Excel、PPT 等文档转成文字。返回 None 表示不是这些格式。"""
+    ext = os.path.splitext(p)[1].lower()
+    if ext == ".pdf":
+        import logging
+        logging.getLogger("pypdf").setLevel(logging.ERROR)  # 不然有些 PDF 会在聊天界面里打出一堆警告
+        from pypdf import PdfReader
+        reader = PdfReader(p)
+        pages = []
+        for i, page in enumerate(reader.pages[:60], 1):
+            pages.append(f"--- 第 {i} 页 ---\n{(page.extract_text() or '').strip()}")
+        text = "\n".join(pages)
+        if not re.sub(r"--- 第 \d+ 页 ---|\s", "", text):
+            return f"这个 PDF（共 {len(reader.pages)} 页）没有文字层，可能是扫描件或图片。可以用 view_image 看第一页。"
+        more = f"\n…（共 {len(reader.pages)} 页，只读了前 60 页）" if len(reader.pages) > 60 else ""
+        return text.translate(_LOOKALIKE) + more
+    if ext in DOC_TEXTUTIL:
+        r = subprocess.run(["/usr/bin/textutil", "-convert", "txt", "-stdout", p],
+                           capture_output=True, text=True, errors="replace", timeout=60)
+        if r.returncode != 0:
+            raise RuntimeError(r.stderr.strip() or "无法读取这个文档")
+        return r.stdout
+    if ext in (".xlsx", ".xlsm"):
+        from openpyxl import load_workbook
+        wb = load_workbook(p, read_only=True, data_only=True)
+        parts = []
+        for ws in wb.worksheets:
+            rows = []
+            for i, row in enumerate(ws.iter_rows(values_only=True)):
+                if i >= 2000:
+                    rows.append("…（只显示前 2000 行）")
+                    break
+                if any(v is not None for v in row):
+                    rows.append("\t".join("" if v is None else str(v) for v in row))
+            parts.append(f"=== 工作表：{ws.title} ===\n" + "\n".join(rows))
+        return "\n\n".join(parts)
+    if ext == ".pptx":
+        with zipfile.ZipFile(p) as z:
+            slides = sorted((n for n in z.namelist() if re.fullmatch(r"ppt/slides/slide\d+\.xml", n)),
+                            key=lambda n: int(re.search(r"\d+", n.rsplit("/", 1)[1]).group()))
+            out = []
+            for i, n in enumerate(slides, 1):
+                texts = re.findall(r"<a:t>([^<]*)</a:t>", z.read(n).decode("utf-8", "replace"))
+                out.append(f"--- 第 {i} 页 ---\n" + html.unescape(" ".join(texts)))
+        return "\n".join(out)
+    if ext == ".xls":
+        return "这是旧版 Excel（.xls），读不了。可以让用户用 Excel 或 Numbers 另存为 .xlsx。"
+    return None
+
+
+def load_image(path):
+    """把图片缩小并转成 JPEG（省流量，HEIC 等格式模型也能看），返回 {"media_type", "data", "name"}。"""
+    p = _path(path)
+    if not os.path.isfile(p):
+        raise FileNotFoundError(f"找不到图片：{p}")
+    tmp_dir = os.path.join(APP_DIR, "tmp")
+    os.makedirs(tmp_dir, exist_ok=True)
+    out = os.path.join(tmp_dir, f"img-{os.getpid()}-{int(time.time() * 1000)}.jpg")
+    try:
+        r = subprocess.run(["/usr/bin/sips", "-s", "format", "jpeg", "-s", "formatOptions", "80",
+                            "-Z", "1568", p, "--out", out], capture_output=True, timeout=60)
+        if r.returncode != 0 or not os.path.exists(out):
+            raise RuntimeError("这个文件不是图片，或者格式不支持")
+        with open(out, "rb") as f:
+            data = f.read()
+    finally:
+        if os.path.exists(out):
+            os.remove(out)
+    return {"media_type": "image/jpeg", "data": base64.b64encode(data).decode(), "name": os.path.basename(p)}
+
+
+def tool_view_image(path):
+    img = load_image(path)
+    return f"已打开图片 {img['name']}（图片附在后面）", True, [img]
+
+
+def tool_screenshot():
+    tmp = os.path.join(APP_DIR, "tmp", f"screen-{os.getpid()}.png")
+    os.makedirs(os.path.dirname(tmp), exist_ok=True)
+    try:
+        r = subprocess.run(["/usr/sbin/screencapture", "-x", "-m", tmp], capture_output=True, timeout=30)
+        if r.returncode != 0 or not os.path.exists(tmp):
+            return ("截屏失败。可能需要在 系统设置 → 隐私与安全性 → 屏幕录制 里允许「终端」。", False)
+        img = load_image(tmp)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+    return ("已截取屏幕（图片附在后面）。如果画面里只有桌面背景、看不到窗口，说明还没有屏幕录制权限，"
+            "请告诉用户在 系统设置 → 隐私与安全性 → 屏幕录制 里允许「终端」。", True, [img])
+
+
+# ── 上网 ──
+
+BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36")
+
+
+def _http_get(url, timeout=20, limit=3_000_000):
+    req = urllib.request.Request(url, headers={"User-Agent": BROWSER_UA, "Accept-Encoding": "gzip",
+                                               "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = resp.read(limit)
+        ctype = resp.headers.get("Content-Type", "")
+        final_url = resp.geturl()
+    if data[:2] == b"\x1f\x8b":  # 有的网站不管怎样都返回压缩过的内容
+        try:
+            data = gzip.decompress(data)
+        except (OSError, EOFError):
+            pass
+    m = re.search(r"charset=([\w-]+)", ctype) or re.search(rb'<meta[^>]+charset=["\']?([\w-]+)', data[:3000])
+    charset = m.group(1) if m else "utf-8"
+    if isinstance(charset, bytes):
+        charset = charset.decode()
+    try:
+        text = data.decode(charset, "replace")
+    except LookupError:
+        text = data.decode("utf-8", "replace")
+    return text, ctype, data, final_url
+
+
+def _strip_tags(s):
+    return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", s))).strip()
+
+
+def _bing_url(href):
+    """Bing 的结果链接有时是跳转链接，参数 u 里是 a1 + base64 编码的真实网址。"""
+    href = html.unescape(href)
+    if "bing.com/ck/a" in href:
+        u = urllib.parse.parse_qs(urllib.parse.urlparse(href).query).get("u", [""])[0]
+        if u.startswith("a1"):
+            try:
+                return base64.urlsafe_b64decode(u[2:] + "=" * (-len(u[2:]) % 4)).decode()
+            except Exception:
+                pass
+    return href
+
+
+def _search_bing(query):
+    page = _http_get("https://cn.bing.com/search?" + urllib.parse.urlencode({"q": query}))[0]
+    results = []
+    for block in page.split('<li class="b_algo"')[1:]:
+        a = re.search(r'<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', block, re.S)
+        if not a:
+            continue
+        snip = re.search(r'<p[^>]*>(.*?)</p>', block, re.S)
+        results.append((_strip_tags(a.group(2)), _bing_url(a.group(1)), _strip_tags(snip.group(1)) if snip else ""))
+    return results
+
+
+def _search_360(query):
+    page = _http_get("https://www.so.com/s?" + urllib.parse.urlencode({"q": query}))[0]
+    results = []
+    heads = list(re.finditer(r'<h3 class="res-title[^"]*"[^>]*>\s*<a([^>]*)>(.*?)</a>', page, re.S))
+    for i, m in enumerate(heads):
+        real = re.search(r'data-mdurl="([^"]+)"', m.group(1)) or re.search(r'href="([^"]+)"', m.group(1))
+        if not real:
+            continue
+        end = heads[i + 1].start() if i + 1 < len(heads) else m.end() + 3000
+        snippet = _strip_tags(re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", page[m.end():end]))
+        results.append((_strip_tags(m.group(2)), html.unescape(real.group(1)), snippet[:200]))
+    return results
+
+
+def tool_web_search(query):
+    errors = []
+    for name, engine in (("Bing", _search_bing), ("360", _search_360)):
+        try:
+            results = engine(query)[:8]
+        except Exception as e:
+            errors.append(f"{name}：{e}")
+            continue
+        if results:
+            lines = [f"{i}. {t}\n   {u}" + (f"\n   {s[:200]}" if s else "")
+                     for i, (t, u, s) in enumerate(results, 1)]
+            return f"搜索「{query}」（{name}）：\n" + "\n".join(lines), True
+        errors.append(f"{name}：没有结果")
+    return "搜索失败：" + "；".join(errors), False
+
+
+def tool_web_fetch(url):
+    if not re.match(r"https?://", url):
+        return "网址要以 http:// 或 https:// 开头", False
+    text, ctype, data, final_url = _http_get(url)
+    for _ in range(3):  # 跟随搜索结果里的 JS / meta 跳转页
+        if len(text) > 5000:
+            break
+        m = (re.search(r'(?:window\.)?location(?:\.href)?\s*(?:=|\.replace\()\s*["\']([^"\']+)["\']', text)
+             or re.search(r'<meta[^>]+http-equiv=["\']?refresh["\']?[^>]+url=([^"\'>]+)', text, re.I))
+        if not m:
+            break
+        nxt = urllib.parse.urljoin(final_url, html.unescape(m.group(1)).strip("'\""))
+        if nxt == final_url or not nxt.startswith("http"):
+            break
+        text, ctype, data, final_url = _http_get(nxt)
+    if "pdf" in ctype or data[:5] == b"%PDF-":
+        tmp = os.path.join(APP_DIR, "tmp", f"web-{os.getpid()}.pdf")
+        os.makedirs(os.path.dirname(tmp), exist_ok=True)
+        with open(tmp, "wb") as f:
+            f.write(data)
+        try:
+            return read_document(tmp), True
+        finally:
+            os.remove(tmp)
+    if "html" not in ctype and "<html" not in text[:2000].lower():
+        return text, True
+    title = re.search(r"<title[^>]*>(.*?)</title>", text, re.S | re.I)
+    body = re.sub(r"(?is)<(script|style|noscript|svg|nav|footer|header|aside|form|iframe)\b.*?</\1>", " ", text)
+    body = re.sub(r"(?is)<!--.*?-->", " ", body)
+    body = re.sub(r"(?i)<(br|/p|/div|/li|/h[1-6]|/tr|/section|/article)[^>]*>", "\n", body)
+    body = html.unescape(re.sub(r"<[^>]+>", " ", body))
+    lines = [re.sub(r"[ \t\u3000\xa0]+", " ", l).strip() for l in body.split("\n")]
+    body = "\n".join(l for l in lines if l)
+    head = f"网页：{_strip_tags(title.group(1)) if title else ''}\n网址：{final_url}\n\n"
+    return head + (body or "（这个网页没有可读的文字，可能需要浏览器运行脚本才能显示）"), True
+
+
+# ── 长期记忆 ──
+
+MEMORY_FILE = os.path.join(CONFIG_DIR, "memory.json")
+
+
+def load_memory():
+    try:
+        with open(MEMORY_FILE, encoding="utf-8") as f:
+            items = json.load(f)
+        return [m for m in items if isinstance(m, dict) and m.get("text")]
+    except (FileNotFoundError, json.JSONDecodeError, TypeError):
+        return []
+
+
+def save_memory(items):
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    with open(MEMORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(items, f, ensure_ascii=False, indent=2)
+    os.chmod(MEMORY_FILE, 0o600)
+
+
+def memory_prompt():
+    items = load_memory()
+    if not items:
+        return ""
+    return "\n\n你记住的关于用户的事（来自以前的对话）：\n" + "\n".join(
+        f"{i}. {m['text']}" for i, m in enumerate(items, 1))
+
+
+def tool_remember(fact):
+    items = load_memory()
+    fact = fact.strip()[:300]
+    if any(m["text"] == fact for m in items):
+        return "已经记住过了", True
+    items.append({"text": fact, "time": time.strftime("%Y-%m-%d")})
+    save_memory(items)
+    return f"已记住（第 {len(items)} 条）", True
+
+
+def tool_forget_memory(number):
+    items = load_memory()
+    if not number.strip().isdigit() or not 1 <= int(number) <= len(items):
+        return f"没有第 {number} 条", False
+    gone = items.pop(int(number) - 1)
+    save_memory(items)
+    return f"已删除：{gone['text']}", True
 
 
 def tool_write_file(path, content):
@@ -765,6 +1134,8 @@ def tool_edit_file(path, old_text, new_text):
 TOOL_FUNCS = {
     "run_command": tool_run_command, "read_file": tool_read_file, "list_dir": tool_list_dir,
     "write_file": tool_write_file, "edit_file": tool_edit_file,
+    "web_search": tool_web_search, "web_fetch": tool_web_fetch, "view_image": tool_view_image,
+    "screenshot": tool_screenshot, "remember": tool_remember, "forget_memory": tool_forget_memory,
 }
 
 
@@ -793,6 +1164,19 @@ def preview_tool(name, args):
         console.print(Text(f"  📄 读取 {_short(_path(args.get('path')))}", style=DIM))
     elif name == "list_dir":
         console.print(Text(f"  📁 查看 {_short(_path(args.get('path')))}", style=DIM))
+    elif name == "web_search":
+        console.print(Text(f"  🌐 搜索：{args.get('query', '')}", style=DIM))
+    elif name == "web_fetch":
+        console.print(Text(f"  🌐 打开 {args.get('url', '')}", style=DIM))
+    elif name == "view_image":
+        console.print(Text(f"  🖼  查看图片 {_short(_path(args.get('path')))}", style=DIM))
+    elif name == "screenshot":
+        console.print(Panel(Text("截取整个屏幕给 AI 看", style="bold"),
+                            title="📸 截屏", title_align="left", border_style="yellow"))
+    elif name == "remember":
+        console.print(Text(f"  🧠 记住：{args.get('fact', '')}", style="magenta"))
+    elif name == "forget_memory":
+        console.print(Text(f"  🧠 忘掉第 {args.get('number', '')} 条", style="magenta"))
 
 
 def approve(name, state):
@@ -800,9 +1184,10 @@ def approve(name, state):
     if name not in NEEDS_APPROVAL or state.get("auto_approve"):
         return True
     while True:
-        ans = plain_prompt(HTML(
-            "  <b>允许吗？</b> <ansigreen>y</ansigreen> 允许 · "
-            "<ansicyan>a</ansicyan> 本次打开期间都允许 · <ansired>n</ansired> 拒绝 : ")).strip().lower()
+        with VIEW.paused():
+            ans = plain_prompt(HTML(
+                "  <b>允许吗？</b> <ansigreen>y</ansigreen> 允许 · "
+                "<ansicyan>a</ansicyan> 本次打开期间都允许 · <ansired>n</ansired> 拒绝 : ")).strip().lower()
         if ans in ("y", "yes", "是"):
             return True
         if ans in ("a", "all"):
@@ -830,16 +1215,22 @@ class Denied(Exception):
 
 
 def execute_tool(call, state):
+    """执行一次工具调用，返回 (给 AI 的文字结果, 图片列表)。"""
+    text, images = _execute_tool(call, state)
+    return _clip(text), images
+
+
+def _execute_tool(call, state):
     name = call["function"]["name"]
     try:
         args = json.loads(call["function"].get("arguments") or "{}")
     except json.JSONDecodeError:
-        return _warn("AI 给的操作参数格式不对，已让它重试")
+        return (_warn("AI 给的操作参数格式不对，已让它重试"), [])
     if not isinstance(args, dict):
-        return _warn("AI 给的操作参数格式不对，已让它重试")
+        return (_warn("AI 给的操作参数格式不对，已让它重试"), [])
     func = TOOL_FUNCS.get(name)
     if func is None:
-        return _warn(f"AI 想用一个不存在的工具 {name}，已让它重试")
+        return (_warn(f"AI 想用一个不存在的工具 {name}，已让它重试"), [])
     schema = next(t["function"]["parameters"] for t in TOOLS if t["function"]["name"] == name)
     for k in list(args):
         alias = PARAM_ALIASES.get(k)
@@ -847,22 +1238,26 @@ def execute_tool(call, state):
             args[alias] = args.pop(k)
     bad = [k for k in schema["required"] if not isinstance(args.get(k), str)]
     if bad:
-        return _warn(f"AI 调用 {name} 时缺少参数 {', '.join(bad)}，已让它重试")
+        return (_warn(f"AI 调用 {name} 时缺少参数 {', '.join(bad)}，已让它重试"), [])
     args = {k: v for k, v in args.items() if k in schema["properties"]}
     preview_tool(name, args)
     if not approve(name, state):
         console.print(Text("  ✗ 已拒绝，AI 已停下。你可以告诉它换个做法。\n", style="red"))
         raise Denied
+    busy = {"run_command": "运行中…", "web_search": "搜索中…", "web_fetch": "打开网页中…",
+            "screenshot": "截屏中…", "read_file": "读取中…"}.get(name)
     try:
-        if name == "run_command":
-            with console.status("运行中…", spinner="dots"):
-                result, ok = func(**args)
+        if busy:
+            with VIEW.busy(busy):
+                out = func(**args)
         else:
-            result, ok = func(**args)
+            out = func(**args)
     except TypeError as e:
-        return f"参数不对：{e}"
+        return f"参数不对：{e}", []
     except Exception as e:
-        result, ok = f"出错：{e}", False
+        out = (f"出错：{e}", False)
+    result, ok = out[0], out[1]
+    images = out[2] if len(out) > 2 else []
     if name in NEEDS_APPROVAL:
         lines = result.splitlines()
         shown = "\n".join(lines[-12:]) if len(lines) > 12 else result
@@ -870,8 +1265,8 @@ def execute_tool(call, state):
             shown = f"…（只显示最后 12 行，共 {len(lines)} 行）\n" + shown
         console.print(Padding(Text(shown, style="green" if ok else "red"), (0, 0, 1, 4)))
     elif not ok:
-        console.print(Padding(Text(result, style="red"), (0, 0, 0, 4)))
-    return _clip(result)
+        console.print(Padding(Text(result[:500], style="red"), (0, 0, 0, 4)))
+    return result, images
 
 
 # ───────────────────────── 对话 ─────────────────────────
@@ -935,23 +1330,103 @@ def _error_text(err):
     return str(err)
 
 
-def refresh_balance(cfg, stats):
-    """后台查询余额，结果写进 stats["balance"]；中转站不支持就一直不显示。"""
-    if cfg.get("type") == "anthropic":
-        stats["balance"] = "n/a"  # Claude 官方接口没有查余额的地方
-        return
+def fetch_balance(cfg):
+    """查余额（美元）。支持两种中转站接口；查不到返回 None。"""
+    if is_official(cfg):
+        return None  # Claude 官方接口没有查余额的地方
+    v1 = cfg["base_url"].rstrip("/")
+    if not v1.endswith("/v1"):
+        v1 += "/v1"
 
+    def get(path):
+        req = urllib.request.Request(v1 + path, headers={"Authorization": f"Bearer {cfg['api_key']}",
+                                                          "User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.load(resp)
+
+    try:
+        return float(get("/usage")["balance"])
+    except Exception:
+        pass
+    try:  # new-api / one-api：总额度 - 已用（已用的单位是美分）
+        limit = float(get("/dashboard/billing/subscription")["hard_limit_usd"])
+        used = float(get("/dashboard/billing/usage")["total_usage"]) / 100
+        return None if limit >= 1e7 else limit - used  # 额度“无限”时算不出余额
+    except Exception:
+        return None
+
+
+def refresh_balance(cfg, stats, before=None):
+    """后台查余额，结果写进 stats["balance"]（查不到为 "n/a"）。
+    传入 before（这次提问前的余额）时，顺便算出这次花了多少，写进 stats["last_cost"]。"""
     def run():
-        req = urllib.request.Request(f"{cfg['base_url']}/usage",
-                                     headers={"Authorization": f"Bearer {cfg['api_key']}",
-                                              "User-Agent": USER_AGENT})
-        try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                stats["balance"] = float(json.load(resp)["balance"])
-        except Exception:
-            if stats["balance"] is None:
-                stats["balance"] = "n/a"
+        bal = fetch_balance(cfg)
+        if bal is None:
+            stats["balance"] = "n/a"
+        else:
+            stats["balance"] = bal
+            if isinstance(before, float):
+                stats["last_cost"] = max(before - bal, 0.0)
+        MENUBAR.update(stats["balance"])
     threading.Thread(target=run, daemon=True).start()
+
+
+class MenuBar:
+    """屏幕顶部菜单栏显示 💲余额（ai 打开时显示，退出后消失）。
+    显示由一个很小的原生程序 dsbar 负责：它每 2 秒读一次 menubar.txt，文件超过 20 秒没更新就自己退出。
+    开着几个 ai 窗口也只有一个 dsbar。"""
+    BIN = os.path.join(APP_DIR, "dsbar")
+    FILE = os.path.join(APP_DIR, "menubar.txt")
+    PID = os.path.join(APP_DIR, "dsbar.pid")
+
+    def __init__(self):
+        self.text, self.on = "", False
+
+    def start(self):
+        if not STORE.get("menubar", True) or not os.access(self.BIN, os.X_OK) or self.on:
+            return
+        self.on = True
+        self._write()
+        if not self._running():
+            proc = subprocess.Popen([self.BIN, self.FILE], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL, start_new_session=True)
+            with open(self.PID, "w") as f:
+                f.write(str(proc.pid))
+        threading.Thread(target=self._heartbeat, daemon=True).start()
+
+    def _running(self):
+        try:
+            with open(self.PID) as f:
+                pid = int(f.read().strip())
+            os.kill(pid, 0)
+            comm = subprocess.run(["ps", "-p", str(pid), "-o", "comm="], capture_output=True, text=True).stdout
+            return comm.strip().endswith("dsbar")
+        except (OSError, ValueError):
+            return False
+
+    def _heartbeat(self):
+        while self.on:
+            self._write()
+            time.sleep(5)
+
+    def _write(self):
+        try:
+            with open(self.FILE, "w", encoding="utf-8") as f:
+                f.write(self.text if self.on else "")
+        except OSError:
+            pass
+
+    def update(self, balance):
+        self.text = f"💲{balance:.2f}" if isinstance(balance, float) else ""
+        if self.on:
+            self._write()
+
+    def stop(self):
+        self.on = False
+        self._write()  # 写空：菜单栏马上隐藏，dsbar 20 秒后自己退出（别的 ai 窗口还开着的话会继续写）
+
+
+MENUBAR = MenuBar()
 
 
 def md(text):
@@ -1005,12 +1480,264 @@ class _Tail:
             yield Segment.line()
 
 
+def _openai_image(img):
+    return {"type": "image_url", "image_url": {"url": f"data:{img['media_type']};base64,{img['data']}"}}
+
+
+_PATH_RE = re.compile(r"""'([^']+)'|"([^"]+)"|((?:~|/)(?:\\.|[^\s\\])+)""")
+
+
+def attach_images(text):
+    """找出输入里的图片路径（把图片拖进终端窗口就会变成路径），读成图片。返回 (图片列表, 出错信息列表)。"""
+    images, errors, seen = [], [], set()
+    for m in _PATH_RE.finditer(text):
+        raw = m.group(1) or m.group(2) or re.sub(r"\\(.)", r"\1", m.group(3))
+        path = os.path.expanduser(raw)
+        if os.path.splitext(path)[1].lower() not in IMAGE_EXTS or path in seen or not os.path.isfile(path):
+            continue
+        seen.add(path)
+        try:
+            images.append(load_image(path))
+        except Exception as e:
+            errors.append(f"{os.path.basename(path)}：{e}")
+    return images, errors
+
+
+def estimate_tokens(history):
+    """粗略估算对话有多少 token：中文大约 1 字 1 token，英文约 4 字母 1 token，这里取 2 个字符 1 token；图片按 1500 算。"""
+    n_img = sum(len(m.get("images") or []) for m in history)
+    slim = [{k: v for k, v in m.items() if k != "images"} for m in history]
+    return len(json.dumps(slim, ensure_ascii=False)) // 2 + n_img * 1500
+
+
+def context_limit(cfg):
+    return 150_000 if "claude" in cfg["model"].lower() else 60_000
+
+
+def _complete(cfg, system, prompt):
+    """不带工具、不显示过程地问一次，返回回答文字（压缩对话用）。"""
+    msgs = [{"role": "user", "content": prompt}]
+    if cfg.get("type") == "anthropic":
+        events = stream_anthropic(cfg, system, msgs)
+    else:
+        events = stream_chat(cfg["base_url"], cfg["api_key"], cfg["model"],
+                             [{"role": "system", "content": system}] + msgs)
+    return split_think("".join(d for k, d in events if k == "content"))[1].strip()
+
+
+def compact(cfg, history):
+    """把较早的对话压缩成一段摘要，只保留最近的部分。成功返回 True。"""
+    users = [i for i, m in enumerate(history) if m["role"] == "user"]
+    if len(users) < 2:
+        return False
+    split = users[-2] if estimate_tokens(history[users[-2]:]) < context_limit(cfg) * 0.3 else users[-1]
+    lines = []
+    for m in history[:split]:
+        if m["role"] == "user":
+            lines.append(f"用户：{m['content'][:3000]}")
+        elif m["role"] == "assistant":
+            if m.get("content"):
+                lines.append(f"AI：{m['content'][:3000]}")
+            for c in m.get("tool_calls") or []:
+                lines.append(f"AI 调用工具 {c['function']['name']}：{c['function'].get('arguments', '')[:300]}")
+        elif m["role"] == "tool":
+            lines.append(f"工具结果：{m['content'][:400]}")
+    transcript = "\n".join(lines)
+    if len(transcript) > context_limit(cfg):
+        half = context_limit(cfg) // 2
+        transcript = transcript[:half] + "\n…（中间省略）…\n" + transcript[-half:]
+    summary = _complete(cfg, "你负责把对话记录压缩成摘要。", (
+        "下面是一段用户和 AI 助手的对话记录。请压缩成一份摘要，供 AI 接着对话时参考。\n"
+        "要保留：用户的目标和要求、已经做过的操作和结果、重要的文件路径/网址/数字/结论、还没完成的事。\n"
+        "用中文，分条写，尽量简短。\n\n" + transcript))
+    if not summary:
+        return False
+    history[:split] = [{"role": "user", "content": "【之前对话的摘要】\n" + summary},
+                       {"role": "assistant", "content": "好的，我已了解之前的对话内容，我们继续。"}]
+    return True
+
+
+def is_context_error(e):
+    """接口报“内容太长、超过上下文”之类的错误。"""
+    if error_code(e) not in (400, 413):
+        return False
+    if hasattr(e, "read") and not hasattr(e, "ds_body"):
+        try:
+            e.ds_body = e.read().decode("utf-8", "replace")
+        except Exception:
+            e.ds_body = ""
+    text = (getattr(e, "ds_body", "") + str(getattr(e, "message", "")) + str(e)).lower()
+    return any(w in text for w in ("context", "too long", "too many tokens", "maximum", "exceed", "长度", "上下文"))
+
+
 def to_openai_messages(history):
-    """发给 OpenAI 格式接口的消息：去掉 Claude 专用字段；之前几轮的思考内容也不再发回（省 token，有的模型不接受）。"""
+    """发给 OpenAI 格式接口的消息：去掉 Claude 专用字段；之前几轮的思考内容也不再发回（省 token，有的模型不接受）。
+    图片：用户消息里的图片放进 content 列表；工具返回的图片（工具消息只能是文字）在这批工具结果后面补一条用户消息。"""
     last_user = max(i for i, m in enumerate(history) if m["role"] == "user")
-    drop = {"anthropic_content"}
-    return [{k: v for k, v in m.items() if k not in drop and (k != "reasoning_content" or i >= last_user)}
-            for i, m in enumerate(history)]
+    out, pending = [], []
+    for i, m in enumerate(history):
+        if pending and m["role"] != "tool":
+            out.append({"role": "user", "content": [{"type": "text", "text": "（上面工具返回的图片）"}]
+                        + [_openai_image(x) for x in pending]})
+            pending = []
+        msg = {k: v for k, v in m.items() if k not in ("anthropic_content", "images")
+               and (k != "reasoning_content" or i >= last_user)}
+        if m.get("images"):
+            if m["role"] == "user":
+                msg["content"] = [{"type": "text", "text": m["content"]}] + [_openai_image(x) for x in m["images"]]
+            else:
+                pending += m["images"]
+        out.append(msg)
+    if pending:
+        out.append({"role": "user", "content": [{"type": "text", "text": "（上面工具返回的图片）"}]
+                    + [_openai_image(x) for x in pending]})
+    return out
+
+
+class TypeAhead:
+    """AI 工作时在后台读键盘：打的字显示在底部输入框里，回车就排进队列，AI 做完当前这一步就会看到。"""
+
+    def __init__(self):
+        self.buf, self.queue = "", []
+        self.lock = threading.Lock()
+        self._thread, self._run, self._fd, self._old = None, False, None, None
+
+    def start(self):
+        if self._run or not sys.stdin.isatty():
+            return
+        import termios
+        import tty
+        self._fd = sys.stdin.fileno()
+        self._old = termios.tcgetattr(self._fd)
+        tty.setcbreak(self._fd)  # 一个字一个字地读、不回显；Ctrl+C 照样能停
+        self._run = True
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        if not self._run:
+            return
+        import termios
+        self._run = False
+        self._thread.join(1)
+        termios.tcsetattr(self._fd, termios.TCSADRAIN, self._old)
+
+    @property
+    def active(self):
+        return self._run
+
+    def _loop(self):
+        import codecs
+        decode = codecs.getincrementaldecoder("utf-8")("ignore").decode
+        esc = ""
+        while self._run:
+            if not select.select([self._fd], [], [], 0.1)[0]:
+                continue
+            for ch in decode(os.read(self._fd, 1024)):
+                if esc:  # 跳过方向键之类的按键（ESC [ … 字母）
+                    esc += ch
+                    if (len(esc) > 1 and ch != "[" and (ch.isalpha() or ch == "~")) or len(esc) > 8:
+                        esc = ""
+                    continue
+                with self.lock:
+                    if ch == "\x1b":
+                        esc = ch
+                    elif ch in "\r\n":
+                        if self.buf.strip():
+                            self.queue.append(self.buf.strip())
+                        self.buf = ""
+                    elif ch in "\x7f\x08":
+                        self.buf = self.buf[:-1]
+                    elif ch == "\x15":  # Ctrl+U 清空
+                        self.buf = ""
+                    elif ch >= " ":
+                        self.buf += ch
+
+    def take(self):
+        with self.lock:
+            items, self.queue = self.queue, []
+        return items
+
+    def leftover(self):
+        """没发出去的内容（排队的 + 正在打的），回到下一次的输入框里。"""
+        with self.lock:
+            text = "\n".join(self.queue + ([self.buf] if self.buf.strip() else []))
+            self.queue, self.buf = [], ""
+        return text
+
+
+class TurnView:
+    """AI 回答、执行操作期间屏幕底部的显示：正在生成的内容、转圈状态、补充输入框。"""
+
+    def __init__(self):
+        self.live, self.stream, self.status = None, None, None
+        self.spinner = Spinner("dots")
+        self.typeahead = TypeAhead()
+
+    def __rich_console__(self, console, options):
+        height = options.max_height or console.height
+        box = self._box() if self.typeahead.active else None
+        reserve = (3 if box else 0) + (1 if self.status else 0) + 1
+        if self.stream is not None:
+            yield _Tail(self.stream, max(height - reserve, 3))
+        if self.status:
+            self.spinner.text = Text(" " + self.status, style=f"italic {ACCENT}")
+            yield Padding(self.spinner, (0, 0, 0, 2))
+        if box:
+            yield box
+
+    def _box(self):
+        with self.typeahead.lock:
+            buf, queued = self.typeahead.buf, len(self.typeahead.queue)
+        if buf:
+            body = Text.assemble(("❯ ", f"bold {ACCENT}"), buf, ("▌", ACCENT))
+        else:
+            body = Text.assemble(("❯ ", f"bold {ACCENT}"), ("▌", ACCENT),
+                                 ("  可以继续输入补充内容，回车发送，AI 做完这一步就会看到", DIM))
+        title = f"已排队 {queued} 条补充" if queued else None
+        return Panel(body, border_style=DIM, title=title, title_align="left", height=3)
+
+    def start(self):
+        self.typeahead.start()
+        self.live = Live(self, console=console, refresh_per_second=12, transient=True, vertical_overflow="crop")
+        self.live.start()
+
+    def stop(self):
+        if self.live:
+            self.live.stop()
+            self.live = None
+        self.typeahead.stop()
+        self.stream = self.status = None
+
+    @contextmanager
+    def paused(self):
+        """要用普通输入框问用户（比如“允许吗？”）时，先把底部显示和后台读键盘停掉。"""
+        if not self.live:
+            yield
+            return
+        self.live.stop()
+        self.typeahead.stop()
+        try:
+            yield
+        finally:
+            self.typeahead.start()
+            self.live.start()
+
+    @contextmanager
+    def busy(self, text):
+        """显示“运行中…”之类的转圈。底部显示开着时放进里面，否则用普通的转圈。"""
+        if not self.live:
+            with console.status(text, spinner="dots"):
+                yield
+            return
+        old, self.status = self.status, text
+        try:
+            yield
+        finally:
+            self.status = old
+
+
+VIEW = TurnView()
 
 
 def stream_turn(cfg, history, stats):
@@ -1028,39 +1755,37 @@ def stream_turn(cfg, history, stats):
         messages = [{"role": "system", "content": system_prompt()}] + to_openai_messages(history)
         events = stream_chat(cfg["base_url"], cfg["api_key"], cfg["model"], messages, tools)
 
-    def tail(r):
-        return _Tail(r, max(console.height - 3, 5))
-
-    # 流式输出时只显示末尾几行，结束后清掉、再把完整内容打印一次
-    with Live(tail(render("", "", started, None)), console=console, refresh_per_second=12,
-              transient=True, vertical_overflow="crop") as live:
-        try:
-            for kind, data in events:
-                if kind == "final":
-                    extra = data
-                    continue
-                if kind == "tool_pending":
-                    calls.setdefault(-1, None)  # 只是让界面显示“正在准备操作”
-                elif kind == "reasoning":
-                    reasoning_field += data
-                elif kind == "content":
-                    raw_content += data
-                elif kind == "usage":
-                    stats["tokens"] += data.get("total_tokens", 0)
-                elif kind == "tool":
-                    c = calls.setdefault(data.get("index", 0),
-                                         {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
-                    c["id"] = data.get("id") or c["id"]
-                    fn = data.get("function") or {}
-                    c["function"]["name"] += fn.get("name") or ""
-                    c["function"]["arguments"] += fn.get("arguments") or ""
-                think_tag, answer = split_think(raw_content)
-                reasoning = reasoning_field + think_tag
-                if (answer or calls) and thinking_done_at is None:
-                    thinking_done_at = time.time()
-                live.update(tail(render(reasoning, answer, started, thinking_done_at, bool(calls))))
-        except KeyboardInterrupt:
-            interrupted = True
+    # 流式输出显示在底部区域（只显示末尾几行），结束后清掉、再把完整内容打印一次
+    VIEW.stream = render("", "", started, None)
+    try:
+        for kind, data in events:
+            if kind == "final":
+                extra = data
+                continue
+            if kind == "tool_pending":
+                calls.setdefault(-1, None)  # 只是让界面显示“正在准备操作”
+            elif kind == "reasoning":
+                reasoning_field += data
+            elif kind == "content":
+                raw_content += data
+            elif kind == "usage":
+                stats["tokens"] += data.get("total_tokens", 0)
+            elif kind == "tool":
+                c = calls.setdefault(data.get("index", 0),
+                                     {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
+                c["id"] = data.get("id") or c["id"]
+                fn = data.get("function") or {}
+                c["function"]["name"] += fn.get("name") or ""
+                c["function"]["arguments"] += fn.get("arguments") or ""
+            think_tag, answer = split_think(raw_content)
+            reasoning = reasoning_field + think_tag
+            if (answer or calls) and thinking_done_at is None:
+                thinking_done_at = time.time()
+            VIEW.stream = render(reasoning, answer, started, thinking_done_at, bool(calls))
+    except KeyboardInterrupt:
+        interrupted = True
+    finally:
+        VIEW.stream = None
     think_tag, answer = split_think(raw_content)
     final = []
     if reasoning_field + think_tag:
@@ -1079,12 +1804,41 @@ def stream_turn(cfg, history, stats):
     return answer.strip(), reasoning_field + think_tag, [calls[i] for i in sorted(calls) if i >= 0], {}
 
 
+def take_supplements(history):
+    """把用户在 AI 工作时补充输入的内容加进对话。返回加了几条。"""
+    items = VIEW.typeahead.take()
+    for text in items:
+        console.print(Panel(Text(text), border_style=DIM, title="你（补充）", title_align="left"))
+        history.append({"role": "user", "content": text})
+    return len(items)
+
+
 def ask(cfg, history, stats, state):
+    """回答一次提问（中间可能调用很多次工具）。返回用户补充了但还没发出去的内容。"""
     started = time.time()
     tokens_before = stats["tokens"]
+    VIEW.start()
     try:
+        retried = False
         for _ in range(MAX_STEPS):
-            answer, reasoning, calls, extra = stream_turn(cfg, history, stats)
+            take_supplements(history)
+            if estimate_tokens(history) > context_limit(cfg):
+                with VIEW.busy("对话太长了，正在把前面的内容压缩成摘要…"):
+                    done = compact(cfg, history)
+                if done:
+                    console.print(Text("  🗜  对话太长，已把前面的内容压缩成摘要（输入 /his 打开旧会话仍能看到原文）", style=DIM))
+            try:
+                answer, reasoning, calls, extra = stream_turn(cfg, history, stats)
+            except Exception as e:
+                if retried or not is_context_error(e):
+                    raise
+                with VIEW.busy("内容超过模型上限，正在压缩前面的对话后重试…"):
+                    done = compact(cfg, history)
+                if not done:
+                    raise
+                retried = True
+                console.print(Text("  🗜  内容超过模型上限，已压缩前面的对话并重试", style=DIM))
+                answer, reasoning, calls, extra = stream_turn(cfg, history, stats)
             stop = extra.get("stop_reason")
             if stop == "refusal":
                 cat = extra.get("refusal_category")
@@ -1101,6 +1855,8 @@ def ask(cfg, history, stats, state):
                     history.append(msg)
                 if not answer and stop != "refusal":
                     console.print(Text("  （AI 没有返回内容，可以再问一次）", style=DIM))
+                if take_supplements(history):
+                    continue  # 回答完了但用户又补充了：接着回答补充的内容
                 break
             msg = {"role": "assistant", "content": answer, "tool_calls": calls}
             if extra.get("raw"):
@@ -1113,8 +1869,11 @@ def ask(cfg, history, stats, state):
             try:
                 while pending:
                     call = pending.pop(0)
-                    result = execute_tool(call, state)
-                    history.append({"role": "tool", "tool_call_id": call["id"], "content": result})
+                    result, images = execute_tool(call, state)
+                    msg = {"role": "tool", "tool_call_id": call["id"], "content": result}
+                    if images:
+                        msg["images"] = images
+                    history.append(msg)
             except (KeyboardInterrupt, EOFError, Denied) as e:
                 reason = "用户拒绝了这个操作，等待用户进一步指示。" if isinstance(e, Denied) else "用户中断了操作。"
                 for c in [call] + pending:
@@ -1122,15 +1881,20 @@ def ask(cfg, history, stats, state):
                         history.append({"role": "tool", "tool_call_id": c["id"], "content": reason})
                 if not isinstance(e, Denied):
                     console.print(Text("\n  （已停止）", style=DIM))
+                elif take_supplements(history):
+                    continue  # 拒绝之后用户补充了新的说法：按补充的接着做
                 break
         else:
             console.print(Text(f"  已连续操作 {MAX_STEPS} 步，先停一下。可以说“继续”让它接着做。", style=DIM))
     except KeyboardInterrupt:
         pass
+    finally:
+        VIEW.stop()
     used = stats["tokens"] - tokens_before
     console.print(Text(f"  ⏱ {time.time() - started:.1f}s", style=DIM)
                   + (Text(f"  ·  {used} tokens", style=DIM) if used else Text()))
     console.print()
+    return VIEW.typeahead.leftover()
 
 
 # ───────────────────────── 会话记录 ─────────────────────────
@@ -1207,6 +1971,8 @@ def replay(history):
     for m in history:
         if m["role"] == "user":
             console.print(Panel(Text(m["content"]), border_style=DIM, title="你", title_align="left"))
+            for img in m.get("images") or []:
+                console.print(Text(f"  🖼  {img.get('name', '图片')}", style=DIM))
         elif m["role"] == "assistant":
             if m.get("content"):
                 console.print(Padding(md(m["content"]), (0, 0, 0, 2)))
@@ -1296,6 +2062,46 @@ def history_menu(history, sess, cfg, stats):
         console.print(Text("  没看懂，请按提示输入", style="red"))
 
 
+def memory_menu():
+    """/memory：查看、添加、删除 AI 记住的事。"""
+    while True:
+        items = load_memory()
+        if items:
+            table = Table(box=None, padding=(0, 2), show_header=False)
+            for i, m in enumerate(items, 1):
+                table.add_row(Text(f"{i}", style=f"bold {ACCENT}"), Text(m["text"]), Text(m.get("time", ""), style=DIM))
+        else:
+            table = Text("还没有记住任何事。聊天时说“记住……”，AI 就会记下来。", style=DIM)
+        console.print(Panel(table, title="🧠 AI 记住的事", title_align="left", border_style="magenta"))
+        ans = plain_prompt(HTML("  <b>a 内容</b> 添加 · <b>d序号</b> 删除 · <b>D</b> 全部忘掉 · 回车 返回 : ")).strip()
+        if not ans:
+            console.print()
+            return
+        if ans[:2].lower() == "a ":
+            console.print(Text(f"  ✓ {tool_remember(ans[2:])[0]}", style="green"))
+            continue
+        m = re.fullmatch(r"[dD]\s*(\d+)", ans)
+        if m:
+            text, ok = tool_forget_memory(m.group(1))
+            console.print(Text(f"  {'✓' if ok else '✗'} {text}", style="green" if ok else "red"))
+            continue
+        if ans == "D" and items:
+            if plain_prompt(HTML(f"  确定忘掉全部 {len(items)} 条吗？输入 <b>yes</b> 确认 : ")).strip().lower() == "yes":
+                save_memory([])
+                console.print(Text("  ✓ 已全部忘掉", style="green"))
+            continue
+        console.print(Text("  没看懂，请按提示输入", style="red"))
+
+
+def copy_last_answer(history):
+    answer = next((m["content"] for m in reversed(history) if m["role"] == "assistant" and m.get("content")), "")
+    if not answer:
+        console.print(Text("  还没有可以复制的回答\n", style=DIM))
+        return
+    subprocess.run(["pbcopy"], input=answer, text=True)
+    console.print(Text(f"  ✓ 已复制上一条回答（{len(answer)} 字），可以去别的地方粘贴了\n", style="green"))
+
+
 def pick_model(cfg):
     try:
         with console.status("正在获取模型列表…", spinner="dots"):
@@ -1342,8 +2148,9 @@ def main():
         if args and args[0] == "--setup":
             return
 
-    history, stats = [], {"tokens": 0, "balance": None}
+    history, stats = [], {"tokens": 0, "balance": None, "last_cost": None}
     state = {"auto_approve": False}  # 本次打开期间是否不再询问
+    MENUBAR.start()
     sess = {}  # 当前会话的 id，第一次保存时生成
     refresh_balance(cfg, stats)
 
@@ -1375,12 +2182,12 @@ def main():
         left_accent = f"  ◆ {cfg['name']} · {cfg['model']}" + ("  ⚡Agent" if STORE.get("agent", True) else "")
         left = f"   {rounds} 轮对话   {stats['tokens']} tokens   /help 查看命令"
         bal = stats["balance"]
+        cost = stats.get("last_cost")
+        right = f"本次 💲{cost:.4f}   " if cost else ""
         if bal is None:
-            right = "余额 查询中…  "
-        elif bal == "n/a":
-            right = ""
-        else:
-            right = f"余额 ${bal:.2f}  "
+            right += "余额 查询中…  "
+        elif isinstance(bal, float):
+            right += f"💲{bal:.2f}  "
         # 按显示宽度（中文、⚡ 占两格）算右对齐的空格
         used = get_cwidth(left_accent + left + right)
         return [
@@ -1391,6 +2198,7 @@ def main():
         ]
 
     show_banner(cfg)
+    prefill = ""  # AI 工作时补充了但没来得及发出去的内容，放回下一次的输入框
     if args and args[0] in ("-c", "--continue"):
         last = next(iter(list_sessions()), None)
         if last:
@@ -1406,7 +2214,8 @@ def main():
         console.print("╭" + "─" * (width() - 2) + "╮", style=ACCENT)
         try:
             text = session.prompt(box_left, rprompt=[("class:box", "│")],
-                                  bottom_toolbar=toolbar).strip()
+                                  bottom_toolbar=toolbar, default=prefill).strip()
+            prefill = ""
         except KeyboardInterrupt:
             text = None
         except EOFError:
@@ -1443,11 +2252,41 @@ def main():
                 console.print(Text("  ✓ Agent 模式已打开：AI 可以运行命令、读写文件（改动前会问你）\n"
                                    if STORE["agent"] else "  ✓ 已切换为纯聊天模式\n", style="green"))
                 continue
+            if cmd in ("/memory", "/mem"):
+                memory_menu()
+                continue
+            if cmd == "/copy":
+                copy_last_answer(history)
+                continue
+            if cmd == "/compact":
+                if len([m for m in history if m["role"] == "user"]) < 2:
+                    console.print(Text("  对话还很短，不用压缩\n", style=DIM))
+                    continue
+                before_n = estimate_tokens(history)
+                with console.status("正在压缩对话…", spinner="dots"):
+                    ok = compact(cfg, history)
+                console.print(Text(f"  ✓ 已压缩：约 {before_n} → {estimate_tokens(history)} tokens\n" if ok
+                                   else "  压缩失败，稍后再试\n", style="green" if ok else "red"))
+                if ok:
+                    save_session(sess, history, cfg)
+                continue
+            if cmd == "/bar":
+                STORE["menubar"] = not STORE.get("menubar", True)
+                save_config()
+                if STORE["menubar"]:
+                    MENUBAR.start()
+                    MENUBAR.update(stats["balance"])
+                    shown = "已打开" if os.access(MenuBar.BIN, os.X_OK) else "已打开，但还没装好菜单栏小程序（重新运行 ai --update 安装）"
+                else:
+                    MENUBAR.stop()
+                    shown = "已关闭"
+                console.print(Text(f"  ✓ 菜单栏余额{shown}\n", style="green"))
+                continue
             if cmd in ("/api", "/key", "/keys", "/apis"):
                 old = cfg
                 cfg = profile_menu(cfg)
                 if cfg is not old or cfg.get("base_url") != old.get("base_url"):
-                    stats["balance"] = None
+                    stats.update(balance=None, last_cost=None)
                     refresh_balance(cfg, stats)
                 continue
             if cmd == "/line":
@@ -1474,16 +2313,26 @@ def main():
             console.print()
             continue
         before = len(history)
-        history.append({"role": "user", "content": text})
+        user_msg = {"role": "user", "content": text}
+        images, img_errors = attach_images(text)
+        for err in img_errors:
+            console.print(Text(f"  ⚠ 图片读取失败：{err}", style="red"))
+        if images:
+            user_msg["images"] = images
+            console.print(Text("  🖼  已附上图片：" + "、".join(i["name"] for i in images), style=DIM))
+        history.append(user_msg)
         console.print()
+        bal_before = stats["balance"]
         try:
-            ask(cfg, history, stats, state)
-            refresh_balance(cfg, stats)
+            prefill = ask(cfg, history, stats, state) or ""
+            refresh_balance(cfg, stats, before=bal_before)
         except urllib.error.HTTPError as e:
             del history[before:]
-            detail = e.read().decode("utf-8", "replace")[:300]
+            detail = (getattr(e, "ds_body", None) or e.read().decode("utf-8", "replace"))[:300]
             tip = ""
-            if e.code >= 500 or e.code == 404:
+            if images and e.code == 400:
+                tip = "\n可能是当前模型不能看图片。用 /model 换名字里带 vision 的模型，或 /api 换成 Claude。"
+            elif e.code >= 500 or e.code == 404:
                 tip = "\n这个模型可能暂时不可用，输入 /model 换一个试试。"
             elif e.code in (401, 403):
                 tip = "\n密钥无效或没有权限，输入 /setup 重新填写。"
@@ -1498,7 +2347,9 @@ def main():
             del history[before:]
             code = error_code(e)
             tip = ""
-            if code in (401, 403):
+            if images and code == 400:
+                tip = "\n可能是当前模型不能看图片。用 /model 换名字里带 vision 的模型，或 /api 换成 Claude。"
+            elif code in (401, 403):
                 tip = "\n密钥无效或没有权限，输入 /setup 重新填写，或 /api 换一套配置。"
             elif code == 429:
                 tip = "\n请求太频繁或额度不足，稍等一下再试。"
@@ -1511,6 +2362,7 @@ def main():
             save_session(sess, history, cfg)
         except OSError as e:
             console.print(Text(f"  会话保存失败：{e}\n", style="red"))
+    MENUBAR.stop()
     console.print(Text("\n  再见 👋\n", style=ACCENT))
 
 

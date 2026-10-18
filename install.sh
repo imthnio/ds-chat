@@ -43,10 +43,11 @@ mkdir -p "$APP_DIR"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
+FILES="ds_chat.py requirements.txt menubar.swift"
 if [ -n "$SRC_DIR" ] && [ -f "$SRC_DIR/ds_chat.py" ] && [ -f "$SRC_DIR/requirements.txt" ]; then
-    cp "$SRC_DIR/ds_chat.py" "$SRC_DIR/requirements.txt" "$TMP_DIR/"
+    for f in $FILES; do cp "$SRC_DIR/$f" "$TMP_DIR/"; done
 else
-    for f in ds_chat.py requirements.txt; do
+    for f in $FILES; do
         # 加时间戳绕过 GitHub 几分钟的缓存，刚发布的新版也能马上更新到
         if ! curl -fsSL --retry 2 "$REPO_RAW/$f?t=$(date +%s)" -o "$TMP_DIR/$f"; then
             red "下载失败：连不上 GitHub（raw.githubusercontent.com）。检查网络或代理后再试。"
@@ -58,7 +59,7 @@ if ! python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$TMP_DIR/
     red "下载的文件不完整，已取消，原来的版本没有改动。请稍后再试。"
     exit 1
 fi
-mv "$TMP_DIR/ds_chat.py" "$TMP_DIR/requirements.txt" "$APP_DIR/"
+for f in $FILES; do mv "$TMP_DIR/$f" "$APP_DIR/"; done
 echo "    程序位置: $APP_DIR"
 
 # 3. 独立的 Python 环境 + 界面库（PyPI 太慢时自动换清华镜像）
@@ -73,6 +74,17 @@ if ! "$PIP" install -q --disable-pip-version-check --timeout 20 -r "$APP_DIR/req
     echo "    官方源失败，换用清华镜像重试…"
     "$PIP" install -q --disable-pip-version-check --timeout 30 \
         -i https://pypi.tuna.tsinghua.edu.cn/simple -r "$APP_DIR/requirements.txt"
+fi
+
+# 菜单栏余额小程序（编译失败也不影响其他功能）
+if command -v swiftc >/dev/null 2>&1; then
+    if swiftc -O -swift-version 5 "$APP_DIR/menubar.swift" -o "$APP_DIR/dsbar.new" >/dev/null 2>&1; then
+        mv "$APP_DIR/dsbar.new" "$APP_DIR/dsbar"
+        echo "    菜单栏余额: 已安装"
+    else
+        rm -f "$APP_DIR/dsbar.new"
+        echo "    菜单栏余额: 编译失败，跳过（其他功能不受影响）"
+    fi
 fi
 
 # 4. 命令 ai
