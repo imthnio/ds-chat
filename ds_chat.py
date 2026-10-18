@@ -43,7 +43,7 @@ from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
-VERSION = "1.3.1"
+VERSION = "1.3.2"
 # 有的中转站会拦截 Python 默认的 User-Agent（返回 403），所以带上自己的名字
 USER_AGENT = f"ds-chat/{VERSION}"
 INSTALL_CMD = "curl -fsSL https://raw.githubusercontent.com/imthnio/ds-chat/main/install.sh | bash"
@@ -690,7 +690,7 @@ def show_help():
         ("/memory", "AI 记住的关于你的事：查看、添加、删除"),
         ("/copy", "复制上一条回答"),
         ("/compact", "把前面的对话压缩成摘要（太长时也会自动压缩）"),
-        ("/bar", "打开 / 关闭屏幕顶部菜单栏的 💲余额"),
+        ("/bar", "打开 / 关闭屏幕顶部菜单栏的 💰余额"),
         ("/agent", "打开 / 关闭 Agent 模式（AI 能否操作电脑）"),
         ("/line", "切换到备用线路（主线路连不上时用）"),
         ("/clear", "开始新对话（当前对话会留在历史里）"),
@@ -1382,7 +1382,7 @@ def refresh_balance(cfg, stats, before=None):
 
 
 class MenuBar:
-    """屏幕顶部菜单栏显示余额：橘色圆圈里一个 $，后面是数字（ai 打开时显示，退出后消失）。
+    """屏幕顶部菜单栏显示 💰余额（ai 打开时显示，退出后消失）。
     显示由一个很小的原生程序 dsbar 负责：它每 2 秒读一次 menubar.txt，文件超过 20 秒没更新就自己退出。
     开着几个 ai 窗口也只有一个 dsbar。"""
     BIN = os.path.join(APP_DIR, "dsbar")
