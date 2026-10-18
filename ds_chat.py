@@ -43,7 +43,7 @@ from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
-VERSION = "1.4.3"
+VERSION = "1.5.0"
 # 有的中转站会拦截 Python 默认的 User-Agent（返回 403），所以带上自己的名字
 USER_AGENT = f"ds-chat/{VERSION}"
 INSTALL_CMD = "curl -fsSL https://raw.githubusercontent.com/imthnio/ds-chat/main/install.sh | bash"
@@ -297,6 +297,44 @@ def to_anthropic_messages(history):
     return out
 
 
+# 思考深度（/think，每套配置分开设置）：(值, 名字, 说明)
+EFFORT_LEVELS = [
+    ("auto", "自动", "用模型默认的（不额外设置）"),
+    ("low", "低", "最快、最省钱，适合聊天"),
+    ("medium", "中", "速度和质量平衡"),
+    ("high", "高", "想得更仔细，适合写代码、做复杂任务"),
+    ("xhigh", "超高", "比高更深入"),
+    ("max", "最高", "最慢、最贵，适合最难的问题"),
+]
+EFFORT_NAMES = {v: name for v, name, _ in EFFORT_LEVELS}
+
+
+def effort_chain(level, model, kind):
+    """要依次尝试的思考深度参数值：模型或中转站不接受时往下降一档，最后不设置。None 表示不设置。"""
+    if not level or level == "auto":
+        return [None]
+    if kind == "anthropic":
+        if not _MODERN_CLAUDE.match(model):
+            return [None]  # 老模型不支持这个参数
+        if "-4-6" in model and level == "xhigh":
+            level = "high"  # 4.6 系列没有“超高”
+    elif level == "max":
+        level = "xhigh"  # OpenAI 格式最高一档叫 xhigh
+    chain = [level] + (["high"] if level in ("xhigh", "max") else [])
+    return chain + [None]
+
+
+def _effort_rejected(e):
+    text = (str(getattr(e, "message", "")) + str(getattr(e, "ds_body", "")) + str(e)).lower()
+    return error_code(e) == 400 and any(w in text for w in ("effort", "output_config", "reasoning"))
+
+
+def _effort_notice(tried, used):
+    names = {**EFFORT_NAMES, "xhigh": "超高"}
+    now = f"「{names.get(used, used)}」" if used else "模型默认"
+    console.print(Text(f"  ⚠ 这个模型或中转站不接受「{names.get(tried, tried)}」思考深度，这次改用{now}", style="yellow"))
+
+
 def stream_anthropic(p, system, history, tools=None):
     """和 stream_chat 产出同样的事件，最后多一个 ("final", {...})，带工具调用、原始内容块和结束原因。"""
     model = p["model"]
@@ -313,7 +351,23 @@ def stream_anthropic(p, system, history, tools=None):
     if official and model in FALLBACK_MODELS:
         kw["extra_headers"] = {"anthropic-beta": "server-side-fallback-2026-07-01"}
         kw["extra_body"] = {"fallbacks": "default"}
-    with anthropic_client(p).messages.stream(**kw) as stream:
+    # 按思考深度依次尝试：不被接受就降一档重试（只在还没收到任何内容时重试）
+    chain = effort_chain(p.get("effort"), model, "anthropic")
+    for i, effort in enumerate(chain):
+        body = {k: v for k, v in (kw.get("extra_body") or {}).items() if k != "output_config"}
+        if effort:
+            body["output_config"] = {"effort": effort}
+        args = {**{k: v for k, v in kw.items() if k != "extra_body"}, **({"extra_body": body} if body else {})}
+        manager = anthropic_client(p).messages.stream(**args)
+        try:
+            stream = manager.__enter__()
+            break
+        except Exception as e:
+            if i + 1 < len(chain) and _effort_rejected(e):
+                _effort_notice(effort, chain[i + 1])
+                continue
+            raise
+    try:
         for ev in stream:
             if ev.type == "content_block_start" and ev.content_block.type == "tool_use":
                 yield "tool_pending", None
@@ -323,6 +377,8 @@ def stream_anthropic(p, system, history, tools=None):
                 elif ev.delta.type == "thinking_delta":
                     yield "reasoning", ev.delta.thinking
         final = stream.get_final_message()
+    finally:
+        manager.__exit__(None, None, None)
     yield "usage", {"total_tokens": final.usage.input_tokens + final.usage.output_tokens}
     calls = [{"id": b.id, "type": "function",
               "function": {"name": b.name, "arguments": json.dumps(b.input, ensure_ascii=False)}}
@@ -740,7 +796,8 @@ def show_banner(cfg):
     info.add_column(style=DIM)
     info.add_column()
     info.add_row("配置", Text.assemble((cfg["name"], f"bold {ACCENT}"), (f"   {kind_label(cfg)}", DIM)))
-    info.add_row("模型", Text(cfg["model"], style=f"bold {ACCENT}"))
+    info.add_row("模型", Text.assemble((cfg["model"], f"bold {ACCENT}"),
+                                     (f"   思考深度：{EFFORT_NAMES[cfg.get('effort', 'auto')]}", DIM)))
     info.add_row("线路", Text(host(cfg["base_url"])))
     info.add_row("模式", Text("Agent · 能上网、看图、读文档、运行命令、读写文件（改动前会问你）", style="yellow")
                  if STORE.get("agent", True) else Text("纯聊天", style=DIM))
@@ -765,6 +822,7 @@ def show_help():
     for cmd, desc in [
         ("/api", "切换 / 添加 / 修改 / 删除 API 配置（比如 DeepSeek、Claude）"),
         ("/model", "切换模型（会先自动检测哪些现在能用）"),
+        ("/think", "思考深度：自动 / 低 / 中 / 高 / 超高 / 最高（每套配置分开设置）"),
         ("/old", "历史会话：打开、删除一个、删除全部"),
         ("/memory", "AI 记住的关于你的事：查看、添加、删除"),
         ("/copy", "复制上一条回答"),
@@ -850,6 +908,9 @@ def system_prompt():
         "- 你可以通过命令操作这台 Mac：open -a \"App 名\" 打开 App，open 网址 用浏览器打开网页，"
         "osascript -e 'display notification \"内容\" with title \"标题\"' 弹通知，pbcopy 复制到剪贴板，say 朗读。\n"
         "- 用户说了以后也有用的个人信息或偏好（或者说“记住…”），用 remember 记下来；不要记密码和密钥。\n"
+        "- 修改代码后，必须实际运行一遍确认改动有效、程序能正常工作（运行程序、跑测试、用测试数据试一次）；"
+        "只做语法检查（比如 python -m py_compile）不算验证。运行失败就修好再试，确认没问题才算完成。"
+        "改的是 ds-chat（也就是你自己所在的这个程序）时尤其要小心：改坏了用户就打不开了。\n"
         "- 任务完成后，简短告诉用户做了什么、结果如何。"
         + memory_prompt()
     )
@@ -1360,8 +1421,8 @@ def _execute_tool(call, state):
 
 # ───────────────────────── 对话 ─────────────────────────
 
-def stream_chat(base, key, model, messages, tools=None, timeout=300):
-    """逐块产出 ("reasoning"|"content"|"tool"|"usage", 数据)。"""
+def stream_chat(base, key, model, messages, tools=None, timeout=300, effort=None):
+    """逐块产出 ("reasoning"|"content"|"tool"|"usage", 数据)。effort 是思考深度（/think）。"""
     payload = {
         "model": model,
         "messages": messages,
@@ -1370,13 +1431,27 @@ def stream_chat(base, key, model, messages, tools=None, timeout=300):
     }
     if tools:
         payload["tools"] = tools
-    req = urllib.request.Request(
-        f"{base}/chat/completions", data=json.dumps(payload).encode(), method="POST",
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
-                 "User-Agent": USER_AGENT},
-    )
+    chain = effort_chain(effort, model, "openai")
+    for i, level in enumerate(chain):
+        payload.pop("reasoning_effort", None)
+        if level:
+            payload["reasoning_effort"] = level
+        req = urllib.request.Request(
+            f"{base}/chat/completions", data=json.dumps(payload).encode(), method="POST",
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
+                     "User-Agent": USER_AGENT},
+        )
+        try:
+            resp = urllib.request.urlopen(req, timeout=timeout)
+            break
+        except urllib.error.HTTPError as e:
+            e.ds_body = e.read().decode("utf-8", "replace")  # 读出来留着，出错提示要用
+            if i + 1 < len(chain) and _effort_rejected(e):
+                _effort_notice(level, chain[i + 1])
+                continue
+            raise
     got_data, other = False, []
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with resp:
         for raw in resp:
             line = raw.decode("utf-8", "replace").strip()
             if not line.startswith("data:"):
@@ -1903,7 +1978,8 @@ def stream_turn(cfg, history, stats):
         events = stream_anthropic(cfg, system_prompt(), history, tools)
     else:
         messages = [{"role": "system", "content": system_prompt()}] + to_openai_messages(history)
-        events = stream_chat(cfg["base_url"], cfg["api_key"], cfg["model"], messages, tools)
+        events = stream_chat(cfg["base_url"], cfg["api_key"], cfg["model"], messages, tools,
+                             effort=cfg.get("effort"))
 
     # 流式输出显示在底部区域（只显示末尾几行），结束后清掉、再把完整内容打印一次
     VIEW.stream = render("", "", started, None)
@@ -2252,6 +2328,23 @@ def copy_last_answer(history):
     console.print(Text(f"  ✓ 已复制上一条回答（{len(answer)} 字），可以去别的地方粘贴了\n", style="green"))
 
 
+def think_menu(cfg):
+    """/think：选当前这套配置的思考深度。"""
+    current = cfg.get("effort", "auto")
+    rows = []
+    for value, name, desc in EFFORT_LEVELS:
+        d = Text(desc, style=DIM)
+        if value == current:
+            d.append("   ● 当前", style=ACCENT)
+        rows.append((name, d))
+    default = next(i for i, (v, _, _) in enumerate(EFFORT_LEVELS, 1) if v == current)
+    n = ask_choice(f"思考深度 · {cfg['name']}（{cfg['model']}）", rows, default)
+    cfg["effort"] = EFFORT_LEVELS[n - 1][0]
+    save_config(cfg)
+    note = "" if cfg["effort"] == "auto" else "（越高越慢、越贵；模型或中转站不支持时会自动降一档）"
+    console.print(Text(f"  ✓ 「{cfg['name']}」的思考深度：{EFFORT_NAMES[cfg['effort']]}{note}\n", style="green"))
+
+
 def pick_model(cfg):
     try:
         with console.status("正在获取模型列表…", spinner="dots"):
@@ -2329,7 +2422,9 @@ def main():
 
     def toolbar():
         rounds = sum(1 for m in history if m["role"] == "user")
-        left_accent = f"  ◆ {cfg['name']} · {cfg['model']}" + ("  ⚡Agent" if STORE.get("agent", True) else "")
+        effort = cfg.get("effort", "auto")
+        left_accent = (f"  ◆ {cfg['name']} · {cfg['model']}" + (f" · 思考{EFFORT_NAMES[effort]}" if effort != "auto" else "")
+                       + ("  ⚡Agent" if STORE.get("agent", True) else ""))
         left = f"   {rounds} 轮对话   {stats['tokens']} tokens   /help 查看命令"
         bal = stats["balance"]
         cost = stats.get("last_cost")
@@ -2393,6 +2488,9 @@ def main():
                 stats["tokens"] = 0
                 state["auto_approve"] = False
                 show_banner(cfg)
+                continue
+            if cmd in ("/think", "/effort"):
+                think_menu(cfg)
                 continue
             if cmd in ("/model", "/m"):
                 pick_model(cfg)
