@@ -1,8 +1,10 @@
 """ds-chat —— 终端里的 AI 聊天 + Agent，界面仿 Grok 风格。
 
+可以保存多套 API 配置（如 DeepSeek 中转站、Claude 官方），聊天时用 /api 切换。
+
 Agent 模式下 AI 可以运行命令、读写文件；运行命令和改文件前都会先问用户。
 
-配置保存在 ~/.config/ds-chat/config.json，第一次运行（或输入 /setup）时会引导填写。
+配置保存在 ~/.config/ds-chat/config.json，第一次运行时会引导填写。
 """
 import asyncio
 import json
@@ -34,7 +36,7 @@ from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
-VERSION = "1.1.2"
+VERSION = "1.2.0"
 INSTALL_CMD = "curl -fsSL https://raw.githubusercontent.com/imthnio/ds-chat/main/install.sh | bash"
 APP_DIR = os.path.expanduser("~/.local/share/ds-chat")
 CONFIG_DIR = os.path.expanduser("~/.config/ds-chat")
@@ -80,24 +82,54 @@ def plain_prompt(*args, **kwargs):
 
 # ───────────────────────── 配置 ─────────────────────────
 
+# 配置文件里可以有多套 API 配置（profiles），active 是正在用的那套。
+# 每套：name 名字、type（"openai" = OpenAI 格式，如 DeepSeek 中转站；"anthropic" = Claude 格式）、
+# base_url、backup_url（可选）、api_key、model。
+STORE = {"profiles": [], "active": 0, "agent": True}
+
+
 def load_config():
+    """读取配置，返回正在用的那套；没有配置时返回 None。旧版只有一套的配置会自动迁移。"""
     try:
         with open(CONFIG_FILE, encoding="utf-8") as f:
-            cfg = json.load(f)
+            data = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return None
-    if not cfg.get("base_url") or not cfg.get("api_key"):
+    if not isinstance(data, dict):
         return None
-    return cfg
+    if "profiles" not in data and data.get("base_url"):
+        data = {"profiles": [{"name": "DeepSeek", "type": "openai", **{
+            k: data[k] for k in ("base_url", "backup_url", "api_key", "model") if k in data}}],
+            "active": 0, "agent": data.get("agent", True)}
+    profiles = [p for p in data.get("profiles") or []
+                if isinstance(p, dict) and p.get("base_url") and p.get("api_key") and p.get("model")]
+    if not profiles:
+        return None
+    STORE.update(profiles=profiles, agent=data.get("agent", True),
+                 active=min(max(int(data.get("active") or 0), 0), len(profiles) - 1))
+    return active_profile()
 
 
-def save_config(cfg):
+def active_profile():
+    return STORE["profiles"][STORE["active"]]
+
+
+def save_config(_cfg=None):
+    """保存全部配置（传进来的 cfg 是 STORE 里某一套的引用，改它就是改 STORE）。"""
     os.makedirs(CONFIG_DIR, exist_ok=True)
     tmp = CONFIG_FILE + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
+        json.dump(STORE, f, ensure_ascii=False, indent=2)
     os.chmod(tmp, 0o600)
     os.replace(tmp, CONFIG_FILE)
+
+
+def kind_label(p):
+    return "Claude 格式" if p.get("type") == "anthropic" else "OpenAI 格式"
+
+
+def host(url):
+    return re.sub(r"^https?://|/v1$", "", url or "")
 
 
 def normalize_base(url):
@@ -109,6 +141,114 @@ def normalize_base(url):
     return url
 
 
+# ── Claude（Anthropic Messages API，用官方 SDK）──
+
+ANTHROPIC_OFFICIAL = "https://api.anthropic.com"
+# 中转站列不出模型时可以选的 Claude 模型
+KNOWN_CLAUDE_MODELS = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1"]
+# 这些模型支持服务端拒答兜底（被安全分类器拒绝时自动换模型重答），只在官方接口上开
+FALLBACK_MODELS = {"claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5"}
+# 支持自适应思考、64K 输出的新模型；其他（老模型或中转站的非 Claude 模型）不传思考参数
+_MODERN_CLAUDE = re.compile(r"claude-(opus-(4-[6-9]|5)|sonnet-(4-6|5)|fable|mythos|haiku-5)")
+_anthropic_clients = {}
+
+
+def is_official(p):
+    return p.get("base_url", "").rstrip("/") == ANTHROPIC_OFFICIAL
+
+
+def anthropic_client(p):
+    import anthropic  # 只有用 Claude 时才加载，启动更快
+    k = (p["base_url"], p["api_key"])
+    if k not in _anthropic_clients:
+        _anthropic_clients[k] = anthropic.Anthropic(api_key=p["api_key"], base_url=p["base_url"])
+    return _anthropic_clients[k]
+
+
+def to_anthropic_messages(history):
+    """把内部（OpenAI 格式）的对话记录转成 Claude 的格式。Claude 自己产生的消息原样带回（含思考块）。"""
+    out = []
+
+    def add(role, blocks):
+        if out and out[-1]["role"] == role:
+            out[-1]["content"].extend(blocks)
+        else:
+            out.append({"role": role, "content": list(blocks)})
+
+    for m in history:
+        if m["role"] == "user":
+            add("user", [{"type": "text", "text": m["content"]}])
+        elif m["role"] == "assistant":
+            if m.get("anthropic_content"):
+                add("assistant", m["anthropic_content"])
+                continue
+            blocks = [{"type": "text", "text": m["content"]}] if m.get("content") else []
+            for c in m.get("tool_calls") or []:
+                try:
+                    args = json.loads(c["function"].get("arguments") or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+                blocks.append({"type": "tool_use", "id": c["id"], "name": c["function"]["name"],
+                               "input": args if isinstance(args, dict) else {}})
+            if blocks:
+                add("assistant", blocks)
+        elif m["role"] == "tool":
+            add("user", [{"type": "tool_result", "tool_use_id": m["tool_call_id"],
+                          "content": m["content"] or "（无输出）"}])
+    return out
+
+
+def stream_anthropic(p, system, history, tools=None):
+    """和 stream_chat 产出同样的事件，最后多一个 ("final", {...})，带工具调用、原始内容块和结束原因。"""
+    model = p["model"]
+    official = is_official(p)
+    kw = {"model": model, "system": system, "messages": to_anthropic_messages(history),
+          "max_tokens": 64000 if _MODERN_CLAUDE.match(model) else 8192}
+    if tools:
+        kw["tools"] = [{"name": t["function"]["name"], "description": t["function"]["description"],
+                        "input_schema": t["function"]["parameters"],
+                        # 大段文件内容边生成边传；中转站可能不认这个字段，只在官方接口开
+                        **({"eager_input_streaming": True} if official else {})} for t in tools]
+    if _MODERN_CLAUDE.match(model):
+        kw["thinking"] = {"type": "adaptive", "display": "summarized"}
+    if official and model in FALLBACK_MODELS:
+        kw["extra_headers"] = {"anthropic-beta": "server-side-fallback-2026-07-01"}
+        kw["extra_body"] = {"fallbacks": "default"}
+    with anthropic_client(p).messages.stream(**kw) as stream:
+        for ev in stream:
+            if ev.type == "content_block_start" and ev.content_block.type == "tool_use":
+                yield "tool_pending", None
+            elif ev.type == "content_block_delta":
+                if ev.delta.type == "text_delta":
+                    yield "content", ev.delta.text
+                elif ev.delta.type == "thinking_delta":
+                    yield "reasoning", ev.delta.thinking
+        final = stream.get_final_message()
+    yield "usage", {"total_tokens": final.usage.input_tokens + final.usage.output_tokens}
+    calls = [{"id": b.id, "type": "function",
+              "function": {"name": b.name, "arguments": json.dumps(b.input, ensure_ascii=False)}}
+             for b in final.content if b.type == "tool_use"]
+    details = getattr(final, "stop_details", None)
+    yield "final", {"calls": calls, "raw": [b.to_dict() for b in final.content],
+                    "stop_reason": final.stop_reason,
+                    "refusal_category": getattr(details, "category", None) if details else None}
+
+
+def list_models(p):
+    if p.get("type") != "anthropic":
+        return fetch_models(p["base_url"], p["api_key"])
+    import anthropic
+    try:
+        return [m.id for m in anthropic_client(p).models.list()]
+    except anthropic.NotFoundError:
+        return list(KNOWN_CLAUDE_MODELS)  # 有的中转站没有模型列表接口
+
+
+def error_code(e):
+    """HTTP 状态码：urllib 的 HTTPError 用 .code，Claude SDK 的错误用 .status_code。"""
+    return getattr(e, "status_code", None) or getattr(e, "code", None)
+
+
 def fetch_models(base, key):
     req = urllib.request.Request(f"{base}/models", headers={"Authorization": f"Bearer {key}"})
     with urllib.request.urlopen(req, timeout=20) as resp:
@@ -116,9 +256,15 @@ def fetch_models(base, key):
     return sorted(m["id"] for m in data.get("data", []) if m.get("id"))
 
 
-def test_model(base, key, model):
+def test_model(p, model):
     """用和聊天一样的流式请求试一次，收到第一块数据就算成功。"""
-    for _ in stream_chat(base, key, model, [{"role": "user", "content": "hi"}]):
+    if p.get("type") == "anthropic":
+        with anthropic_client(p).messages.stream(
+                model=model, max_tokens=64, messages=[{"role": "user", "content": "hi"}]) as stream:
+            for _ in stream:
+                return
+        return
+    for _ in stream_chat(p["base_url"], p["api_key"], model, [{"role": "user", "content": "hi"}]):
         return
 
 
@@ -137,56 +283,83 @@ def ask_choice(title, rows, default=1):
         console.print(Text("  请输入列表里的数字", style="red"))
 
 
+# 向导第 1 步的选项：(名称, 说明, 类型, 地址)；地址为空表示让用户自己填
+LINE_CHOICES = [
+    ("DeepSeek 主线路", PRESET_LINES[0][1], "openai", PRESET_LINES[0][1]),
+    ("DeepSeek 备用线路", PRESET_LINES[1][1], "openai", PRESET_LINES[1][1]),
+    ("Claude 官方", ANTHROPIC_OFFICIAL, "anthropic", ANTHROPIC_OFFICIAL),
+    ("其他中转站 · OpenAI 格式", "大多数中转站、DeepSeek、通义等", "openai", ""),
+    ("其他中转站 · Claude 格式", "提供 Claude 接口的中转站", "anthropic", ""),
+]
+
+
 def setup_wizard(old=None):
+    """填写一套 API 配置并测试，返回这套配置（不保存，由调用的地方保存）。old 是要修改的那套。"""
     console.clear()
+    title = f"修改配置「{old['name']}」" if old else "添加一套 API 配置"
     console.print(Panel(Text.assemble(
-        ("欢迎使用 ds-chat\n\n", f"bold {ACCENT}"),
-        ("接下来需要填 3 样东西：线路、API 密钥、默认模型。\n", ""),
-        ("随时按 Ctrl+C 可以退出，之后输入 ", DIM), ("ai --setup", ACCENT), (" 重新设置。", DIM),
+        (f"{title}\n\n", f"bold {ACCENT}"),
+        ("需要填：线路、API 密钥、默认模型，最后给它起个名字。\n", ""),
+        ("随时按 Ctrl+C 可以取消。", DIM),
     ), border_style=ACCENT, padding=(1, 2)))
     old = old or {}
 
     while True:
-        # 第 1 步：线路
-        rows = [(name, url) for name, url in PRESET_LINES] + [("自定义", "填写其他中转站地址")]
-        n = ask_choice("第 1 步 · 选择线路", rows)
-        if n <= len(PRESET_LINES):
-            base = PRESET_LINES[n - 1][1]
-        else:
+        # 第 1 步：线路 / 类型
+        default = next((i for i, c in enumerate(LINE_CHOICES, 1)
+                        if c[3] and c[3] == old.get("base_url")), 1)
+        if old and default == 1 and old.get("base_url") != LINE_CHOICES[0][3]:
+            default = 5 if old.get("type") == "anthropic" else 4
+        n = ask_choice("第 1 步 · 选择线路", [(c[0], c[1]) for c in LINE_CHOICES], default)
+        name, _, kind, base = LINE_CHOICES[n - 1]
+        if not base:
             url = ""
             while not url:
                 url = plain_prompt(HTML("<b>接口地址</b> (例如 https://example.com): ")).strip()
             base = normalize_base(url)
-        backup = next((u for _, u in PRESET_LINES if u != base), "") if n <= len(PRESET_LINES) else ""
+            if kind == "anthropic":
+                base = re.sub(r"/v1$", "", base)  # Claude SDK 自己会加 /v1
+        backup = next((u for _, u in PRESET_LINES if u != base), "") if base in dict(PRESET_LINES).values() else ""
+        draft = {"type": kind, "base_url": base, "backup_url": backup}
 
         # 第 2 步：密钥
         console.print()
-        hint = "（直接回车 = 沿用原来的密钥）" if old.get("api_key") else ""
+        same = old.get("api_key") and old.get("type") == kind
+        hint = "（直接回车 = 沿用原来的密钥）" if same else ""
         console.print(Text(f"第 2 步 · 粘贴 API 密钥{hint}，输入时不会显示出来", style=f"bold {ACCENT}"))
         key = ""
         while not key:
-            key = plain_prompt("🔑 ", is_password=True).strip() or old.get("api_key", "")
+            key = plain_prompt("🔑 ", is_password=True).strip() or (old.get("api_key", "") if same else "")
+        draft["api_key"] = key
+        if kind == "openai" and key.startswith("sk-ant-"):
+            console.print(Text("  提示：这像是 Claude 官方密钥，Claude 官方请在第 1 步选「Claude 官方」", style="yellow"))
 
         # 测试连接
         try:
             with console.status("正在测试连接…", spinner="dots"):
-                models = fetch_models(base, key)
-        except urllib.error.HTTPError as e:
-            msg = "密钥不对，或者这个密钥没有权限" if e.code in (401, 403) else f"服务器返回错误 HTTP {e.code}"
+                models = list_models(draft)
+        except Exception as e:
+            code = error_code(e)
+            if code in (401, 403):
+                msg = "密钥不对，或者这个密钥没有权限"
+            elif code:
+                msg = f"服务器返回错误 HTTP {code}"
+            else:
+                msg = f"连不上 {base}\n{e}\n换一条线路再试试"
             console.print(Panel(Text(msg + "\n请重新填写。"), title="连接失败", border_style="red"))
             continue
-        except Exception as e:
-            console.print(Panel(Text(f"连不上 {base}\n{e}\n换一条线路再试试。"), title="连接失败", border_style="red"))
-            continue
         if not models:
-            console.print(Panel("连接成功，但这个密钥没有可用的模型，请检查分组设置。",
+            console.print(Panel(Text("连接成功，但这个密钥没有可用的模型，请检查分组设置。"),
                                 title="没有模型", border_style="red"))
             continue
         console.print(Text(f"  ✓ 连接成功，找到 {len(models)} 个模型\n", style="green"))
         break
 
     # 第 3 步：默认模型（选完实际试一次，有的中转站会列出用不了的模型）
-    default = next((i for i, m in enumerate(models, 1) if "pro" in m.lower() and "/" not in m), 1)
+    if kind == "anthropic":
+        default = models.index("claude-opus-5-5") + 1 if "claude-opus-5-5" in models else 1
+    else:
+        default = next((i for i, m in enumerate(models, 1) if "pro" in m.lower() and "/" not in m), 1)
     if old.get("model") in models:
         default = models.index(old["model"]) + 1
     while True:
@@ -194,21 +367,82 @@ def setup_wizard(old=None):
         model = models[n - 1]
         try:
             with console.status(f"正在测试 {model}…", spinner="dots"):
-                test_model(base, key, model)
+                test_model(draft, model)
             break
         except Exception as e:
             console.print(Panel(Text(f"{model} 现在用不了（{e}），请换一个。"),
                                 title="模型不可用", border_style="red"))
             default = 1 if n != 1 else min(2, len(models))
+    draft["model"] = model
 
-    cfg = {"base_url": base, "backup_url": backup, "api_key": key, "model": model}
-    save_config(cfg)
+    # 第 4 步：名字
+    suggest = old.get("name") or ("Claude" if kind == "anthropic" else
+                                  "DeepSeek" if "deepseek" in model.lower() else host(base))
+    label = plain_prompt(HTML(f"\n<b>第 4 步 · 给这套配置起个名字</b> (直接回车 = {suggest}): ")).strip()
+    draft["name"] = label[:20] or suggest
+
     console.print(Panel(Text.assemble(
-        ("✓ 设置完成！\n\n", "bold green"),
-        ("以后在终端输入 ", ""), ("ai", f"bold {ACCENT}"), (" 就能开始聊天。", ""),
+        (f"✓ 配置「{draft['name']}」已就绪\n\n", "bold green"),
+        ("聊天时输入 ", ""), ("/api", f"bold {ACCENT}"), (" 可以在几套配置之间切换。", ""),
     ), border_style="green", padding=(1, 2)))
-    plain_prompt(HTML("<grey>按回车开始…</grey>"))
-    return cfg
+    plain_prompt(HTML("<grey>按回车继续…</grey>"))
+    return draft
+
+
+def profile_menu(cfg):
+    """/api：切换、添加、修改、删除 API 配置。返回切换后正在用的那套。"""
+    while True:
+        profiles = STORE["profiles"]
+        table = Table(box=None, padding=(0, 2), show_header=False)
+        for i, p in enumerate(profiles, 1):
+            mark = "● 当前" if i - 1 == STORE["active"] else ""
+            table.add_row(Text(f"{i}", style=f"bold {ACCENT}"), Text(p["name"], style="bold"),
+                          Text(p["model"]), Text(f"{kind_label(p)} · {host(p['base_url'])}", style=DIM),
+                          Text(mark, style="green"))
+        console.print(Panel(table, title="API 配置", title_align="left", border_style=ACCENT))
+        ans = plain_prompt(HTML("  <b>序号</b> 切换 · <b>a</b> 添加 · <b>e序号</b> 修改 · "
+                                "<b>d序号</b> 删除 · 回车 返回 : ")).strip()
+        if not ans:
+            console.print()
+            return active_profile()
+        if ans.isdigit() and 1 <= int(ans) <= len(profiles):
+            STORE["active"] = int(ans) - 1
+            save_config()
+            p = active_profile()
+            console.print(Text(f"  ✓ 已切换到「{p['name']}」（{p['model']}），当前对话会接着聊\n", style="green"))
+            return p
+        if ans.lower() == "a":
+            try:
+                p = setup_wizard()
+            except (KeyboardInterrupt, EOFError):
+                console.print(Text("\n  已取消添加\n", style=DIM))
+                continue
+            profiles.append(p)
+            STORE["active"] = len(profiles) - 1
+            save_config()
+            return p
+        m = re.fullmatch(r"([eEdD])\s*(\d+)", ans)
+        if m and 1 <= int(m.group(2)) <= len(profiles):
+            i = int(m.group(2)) - 1
+            if m.group(1).lower() == "e":
+                try:
+                    profiles[i] = setup_wizard(profiles[i])
+                except (KeyboardInterrupt, EOFError):
+                    console.print(Text("\n  已取消修改\n", style=DIM))
+                    continue
+                save_config()
+                return active_profile()
+            if len(profiles) == 1:
+                console.print(Text("  只剩这一套了，不能删除（可以用 e1 修改它）", style="red"))
+                continue
+            if plain_prompt(HTML(f"  确定删除「{profiles[i]['name']}」吗？(y/n) : ")).strip().lower() in ("y", "yes", "是"):
+                del profiles[i]
+                if STORE["active"] >= i and STORE["active"] > 0:
+                    STORE["active"] -= 1
+                save_config()
+                console.print(Text("  ✓ 已删除\n", style="green"))
+            continue
+        console.print(Text("  没看懂，请按提示输入", style="red"))
 
 
 # ───────────────────────── 界面 ─────────────────────────
@@ -236,13 +470,15 @@ def show_banner(cfg):
     info = Table.grid(padding=(0, 2))
     info.add_column(style=DIM)
     info.add_column()
+    info.add_row("配置", Text.assemble((cfg["name"], f"bold {ACCENT}"), (f"   {kind_label(cfg)}", DIM)))
     info.add_row("模型", Text(cfg["model"], style=f"bold {ACCENT}"))
-    info.add_row("线路", Text(re.sub(r"^https?://|/v1$", "", cfg["base_url"])))
+    info.add_row("线路", Text(host(cfg["base_url"])))
     info.add_row("模式", Text("Agent · 可以运行命令、读写文件（改动前会问你）", style="yellow")
-                 if cfg.get("agent", True) else Text("纯聊天", style=DIM))
+                 if STORE.get("agent", True) else Text("纯聊天", style=DIM))
     info.add_row("目录", Text(_short(os.getcwd())))
     tips = Text.assemble(
         ("提示  ", DIM),
+        ("/api", ACCENT), (" 切换配置   ", DIM),
         ("/model", ACCENT), (" 切换模型   ", DIM),
         ("/his", ACCENT), (" 历史会话   ", DIM),
         ("/agent", ACCENT), (" 开关 Agent   ", DIM),
@@ -258,12 +494,13 @@ def show_banner(cfg):
 def show_help():
     table = Table(box=None, padding=(0, 2), show_header=False)
     for cmd, desc in [
+        ("/api", "切换 / 添加 / 修改 / 删除 API 配置（比如 DeepSeek、Claude）"),
         ("/model", "切换模型"),
         ("/his", "历史会话：打开、删除一个、删除全部"),
         ("/agent", "打开 / 关闭 Agent 模式（AI 能否操作电脑）"),
         ("/line", "切换到备用线路（主线路连不上时用）"),
         ("/clear", "开始新对话（当前对话会留在历史里）"),
-        ("/setup", "重新设置线路、密钥、默认模型"),
+        ("/setup", "修改当前这套配置的线路、密钥、默认模型"),
         ("ai -c", "（在终端里运行）接着上次的对话聊"),
         ("ai --update", "（在终端里运行）更新到最新版"),
         ("/help", "显示这个帮助"),
@@ -483,6 +720,10 @@ def execute_tool(call, state):
     func = TOOL_FUNCS.get(name)
     if func is None:
         return f"没有叫 {name} 的工具"
+    schema = next(t["function"]["parameters"] for t in TOOLS if t["function"]["name"] == name)
+    bad = [k for k in schema["required"] if not isinstance(args.get(k), str)]
+    if bad:
+        return f"缺少参数或参数不是文字：{', '.join(bad)}，请重试"
     preview_tool(name, args)
     if not approve(name, state):
         console.print(Text("  ✗ 已拒绝，AI 已停下。你可以告诉它换个做法。\n", style="red"))
@@ -570,6 +811,10 @@ def _error_text(err):
 
 def refresh_balance(cfg, stats):
     """后台查询余额，结果写进 stats["balance"]；中转站不支持就一直不显示。"""
+    if cfg.get("type") == "anthropic":
+        stats["balance"] = "n/a"  # Claude 官方接口没有查余额的地方
+        return
+
     def run():
         req = urllib.request.Request(f"{cfg['base_url']}/usage",
                                      headers={"Authorization": f"Bearer {cfg['api_key']}"})
@@ -633,14 +878,28 @@ class _Tail:
             yield Segment.line()
 
 
-def stream_turn(cfg, messages, stats):
-    """请求一次模型并实时显示。返回 (回答, 思考内容, 工具调用列表)。Ctrl+C 往外抛。"""
+def to_openai_messages(history):
+    """发给 OpenAI 格式接口的消息：去掉 Claude 专用字段；之前几轮的思考内容也不再发回（省 token，有的模型不接受）。"""
+    last_user = max(i for i, m in enumerate(history) if m["role"] == "user")
+    drop = {"anthropic_content"}
+    return [{k: v for k, v in m.items() if k not in drop and (k != "reasoning_content" or i >= last_user)}
+            for i, m in enumerate(history)]
+
+
+def stream_turn(cfg, history, stats):
+    """请求一次模型并实时显示。返回 (回答, 思考内容, 工具调用列表, 额外信息)。Ctrl+C 往外抛。"""
     started = time.time()
     raw_content, reasoning_field = "", ""
     calls = {}  # index -> {"id", "type", "function": {"name", "arguments"}}
+    extra = {}  # Claude 才有：工具调用、原始内容块、结束原因
     thinking_done_at = None
-    tools = TOOLS if cfg.get("agent", True) else None
+    tools = TOOLS if STORE.get("agent", True) else None
     interrupted = False
+    if cfg.get("type") == "anthropic":
+        events = stream_anthropic(cfg, system_prompt(), history, tools)
+    else:
+        messages = [{"role": "system", "content": system_prompt()}] + to_openai_messages(history)
+        events = stream_chat(cfg["base_url"], cfg["api_key"], cfg["model"], messages, tools)
 
     def tail(r):
         return _Tail(r, max(console.height - 3, 5))
@@ -649,8 +908,13 @@ def stream_turn(cfg, messages, stats):
     with Live(tail(render("", "", started, None)), console=console, refresh_per_second=12,
               transient=True, vertical_overflow="crop") as live:
         try:
-            for kind, data in stream_chat(cfg["base_url"], cfg["api_key"], cfg["model"], messages, tools):
-                if kind == "reasoning":
+            for kind, data in events:
+                if kind == "final":
+                    extra = data
+                    continue
+                if kind == "tool_pending":
+                    calls.setdefault(-1, None)  # 只是让界面显示“正在准备操作”
+                elif kind == "reasoning":
                     reasoning_field += data
                 elif kind == "content":
                     raw_content += data
@@ -683,7 +947,9 @@ def stream_turn(cfg, messages, stats):
         console.print(Padding(Group(*final), (0, 0, 0, 2)))
     if interrupted:
         raise KeyboardInterrupt
-    return answer.strip(), reasoning_field + think_tag, [calls[i] for i in sorted(calls)]
+    if extra:
+        return answer.strip(), reasoning_field + think_tag, extra["calls"], extra
+    return answer.strip(), reasoning_field + think_tag, [calls[i] for i in sorted(calls) if i >= 0], {}
 
 
 def ask(cfg, history, stats, state):
@@ -691,20 +957,28 @@ def ask(cfg, history, stats, state):
     tokens_before = stats["tokens"]
     try:
         for _ in range(MAX_STEPS):
-            # 之前几轮的思考内容不再发回去（省 token，有的模型也不接受），只保留这一轮工具调用时的
-            last_user = max(i for i, m in enumerate(history) if m["role"] == "user")
-            past = [{k: v for k, v in m.items() if k != "reasoning_content"} if i < last_user else m
-                    for i, m in enumerate(history)]
-            messages = [{"role": "system", "content": system_prompt()}] + past
-            answer, reasoning, calls = stream_turn(cfg, messages, stats)
+            answer, reasoning, calls, extra = stream_turn(cfg, history, stats)
+            stop = extra.get("stop_reason")
+            if stop == "refusal":
+                cat = extra.get("refusal_category")
+                console.print(Text(f"  Claude 拒绝回答这个请求{f'（类别：{cat}）' if cat else ''}，可以换个说法再试。",
+                                   style="yellow"))
+            if stop == "max_tokens" and calls:
+                console.print(Text("  回答太长被截断了，这次的操作没有执行。可以说“继续”。", style="yellow"))
+                calls = []
             if not calls:
-                if answer:
-                    history.append({"role": "assistant", "content": answer})
-                else:
+                if answer or extra.get("raw"):
+                    msg = {"role": "assistant", "content": answer}
+                    if extra.get("raw"):
+                        msg["anthropic_content"] = extra["raw"]  # 原样带回，Claude 需要它的思考块
+                    history.append(msg)
+                if not answer and stop != "refusal":
                     console.print(Text("  （AI 没有返回内容，可以再问一次）", style=DIM))
                 break
             msg = {"role": "assistant", "content": answer, "tool_calls": calls}
-            if reasoning:
+            if extra.get("raw"):
+                msg["anthropic_content"] = extra["raw"]
+            elif reasoning:
                 msg["reasoning_content"] = reasoning  # DeepSeek 思考模式调用工具时要求带回
             history.append(msg)
             # 每个工具调用都必须有对应的结果，否则下一次请求会被拒绝
@@ -757,6 +1031,7 @@ def save_session(sess, history, cfg):
         "created": sess.get("created", now),
         "updated": now,
         "model": cfg["model"],
+        "profile": cfg.get("name"),
         "messages": history,
     }
     tmp = _session_path(sess["id"]) + ".tmp"
@@ -897,7 +1172,7 @@ def history_menu(history, sess, cfg, stats):
 def pick_model(cfg):
     try:
         with console.status("正在获取模型列表…", spinner="dots"):
-            models = fetch_models(cfg["base_url"], cfg["api_key"])
+            models = list_models(cfg)
     except Exception as e:
         console.print(Panel(Text(f"获取模型列表失败：{e}"), title="出错了", border_style="red"), "\n")
         return
@@ -927,10 +1202,16 @@ def main():
     cfg = load_config()
     if cfg is None or (args and args[0] == "--setup"):
         try:
-            cfg = setup_wizard(cfg)
+            new = setup_wizard(cfg)
         except (KeyboardInterrupt, EOFError):
             console.print(Text("\n  已取消设置\n", style=DIM))
             return
+        if cfg is None:
+            STORE.update(profiles=[new], active=0)
+        else:
+            STORE["profiles"][STORE["active"]] = new
+        save_config()
+        cfg = active_profile()
         if args and args[0] == "--setup":
             return
 
@@ -964,7 +1245,7 @@ def main():
 
     def toolbar():
         rounds = sum(1 for m in history if m["role"] == "user")
-        left_accent = f"  ◆ {cfg['model']}" + ("  ⚡Agent" if cfg.get("agent", True) else "")
+        left_accent = f"  ◆ {cfg['name']} · {cfg['model']}" + ("  ⚡Agent" if STORE.get("agent", True) else "")
         left = f"   {rounds} 轮对话   {stats['tokens']} tokens   /help 查看命令"
         bal = stats["balance"]
         if bal is None:
@@ -1030,22 +1311,31 @@ def main():
                 pick_model(cfg)
                 continue
             if cmd == "/agent":
-                cfg["agent"] = not cfg.get("agent", True)
-                save_config(cfg)
+                STORE["agent"] = not STORE.get("agent", True)
+                save_config()
                 console.print(Text("  ✓ Agent 模式已打开：AI 可以运行命令、读写文件（改动前会问你）\n"
-                                   if cfg["agent"] else "  ✓ 已切换为纯聊天模式\n", style="green"))
+                                   if STORE["agent"] else "  ✓ 已切换为纯聊天模式\n", style="green"))
+                continue
+            if cmd in ("/api", "/key", "/keys", "/apis"):
+                old = cfg
+                cfg = profile_menu(cfg)
+                if cfg is not old or cfg.get("base_url") != old.get("base_url"):
+                    stats["balance"] = None
+                    refresh_balance(cfg, stats)
                 continue
             if cmd == "/line":
                 switch_line(cfg)
                 refresh_balance(cfg, stats)
                 continue
             if cmd == "/setup":
-                cfg = setup_wizard(cfg)
-                history.clear()
-                sess.clear()
-                stats.update(tokens=0, balance=None)
+                STORE["profiles"][STORE["active"]] = setup_wizard(cfg)
+                save_config()
+                cfg = active_profile()
+                stats["balance"] = None
                 refresh_balance(cfg, stats)
                 show_banner(cfg)
+                if history:
+                    replay(history)
                 continue
             if cmd == "/help":
                 show_help()
@@ -1077,9 +1367,19 @@ def main():
             del history[before:]
             tip = "输入 /line 切换到备用线路再试试。" if cfg.get("backup_url") else "检查网络，或输入 /setup 换线路。"
             console.print(Panel(Text(f"网络连接失败：{e}\n{tip}"), title="出错了", border_style="red"), "\n")
-        except Exception as e:  # 兜底：出什么错都不退出程序，对话也不丢
+        except Exception as e:  # 兜底：出什么错都不退出程序，对话也不丢（Claude SDK 的错误也在这里）
             del history[before:]
-            console.print(Panel(Text(f"{e}\n（{type(e).__name__}）"), title="出错了", border_style="red"), "\n")
+            code = error_code(e)
+            tip = ""
+            if code in (401, 403):
+                tip = "\n密钥无效或没有权限，输入 /setup 重新填写，或 /api 换一套配置。"
+            elif code == 429:
+                tip = "\n请求太频繁或额度不足，稍等一下再试。"
+            elif code and code >= 500 or code == 404:
+                tip = "\n这个模型可能暂时不可用，输入 /model 换一个，或 /api 换一套配置。"
+            elif type(e).__name__ in ("APIConnectionError", "APITimeoutError"):
+                tip = "\n网络连接失败，检查网络或代理后再试。"
+            console.print(Panel(Text(f"{e}\n（{type(e).__name__}）{tip}"), title="出错了", border_style="red"), "\n")
         try:
             save_session(sess, history, cfg)
         except OSError as e:
