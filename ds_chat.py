@@ -36,7 +36,9 @@ from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
+# 有的中转站会拦截 Python 默认的 User-Agent（返回 403），所以带上自己的名字
+USER_AGENT = f"ds-chat/{VERSION}"
 INSTALL_CMD = "curl -fsSL https://raw.githubusercontent.com/imthnio/ds-chat/main/install.sh | bash"
 APP_DIR = os.path.expanduser("~/.local/share/ds-chat")
 CONFIG_DIR = os.path.expanduser("~/.config/ds-chat")
@@ -250,7 +252,8 @@ def error_code(e):
 
 
 def fetch_models(base, key):
-    req = urllib.request.Request(f"{base}/models", headers={"Authorization": f"Bearer {key}"})
+    req = urllib.request.Request(f"{base}/models", headers={"Authorization": f"Bearer {key}",
+                                                            "User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=20) as resp:
         data = json.load(resp)
     return sorted(m["id"] for m in data.get("data", []) if m.get("id"))
@@ -293,6 +296,30 @@ LINE_CHOICES = [
 ]
 
 
+# 从 PDF、备忘录里复制时常混进来的“长得像”的字符
+_LOOKALIKE = str.maketrans({"ɑ": "a", "ο": "o", "О": "O", "о": "o", "І": "I", "і": "i", "Ⅰ": "I", "ⅼ": "l",
+                            "‐": "-", "‑": "-", "–": "-", "—": "-", "－": "-", "“": '"', "”": '"', "‘": "'", "’": "'"})
+
+
+def parse_pasted(text):
+    """清理粘贴进来的密钥或连接信息，返回 (密钥, 地址)，地址没有就是空字符串。
+    支持中转站“复制连接信息”给的 JSON，如 {"key": "sk-…", "url": "https://…"}。"""
+    text = text.translate(_LOOKALIKE).strip()
+    url = ""
+    m = re.search(r"\{.*\}", text, re.S)
+    if m:
+        try:
+            # 复制时密钥、网址中间常被断行；这些字段里本来就没有空白，全部去掉再解析
+            data = json.loads(re.sub(r"\s+", "", m.group(0)))
+            text, url = str(data.get("key") or ""), str(data.get("url") or "")
+        except (json.JSONDecodeError, AttributeError):
+            pass
+    key = re.sub(r"\s+", "", text).strip("\"'`")
+    if re.fullmatch(r"sk[A-Za-z0-9]{48}", key):
+        key = "sk-" + key[2:]  # 从 PDF 复制时，sk- 在行尾的话 - 会被当成断字符号吞掉
+    return key, re.sub(r"\s+", "", url).strip("\"'`")
+
+
 def setup_wizard(old=None):
     """填写一套 API 配置并测试，返回这套配置（不保存，由调用的地方保存）。old 是要修改的那套。"""
     console.clear()
@@ -313,12 +340,20 @@ def setup_wizard(old=None):
         n = ask_choice("第 1 步 · 选择线路", [(c[0], c[1]) for c in LINE_CHOICES], default)
         name, _, kind, base = LINE_CHOICES[n - 1]
         if not base:
-            url = ""
+            url, pasted_key = "", ""
             while not url:
-                url = plain_prompt(HTML("<b>接口地址</b> (例如 https://example.com): ")).strip()
+                url = plain_prompt(HTML("<b>接口地址</b> (例如 https://example.com，"
+                                        "也可以直接粘贴中转站给的连接信息): ")).strip()
+                pasted_key, from_json = parse_pasted(url)
+                if from_json:  # 粘贴的是 {"key":…, "url":…}
+                    url = from_json
+                else:
+                    url, pasted_key = url.translate(_LOOKALIKE).strip(" \"'"), ""
             base = normalize_base(url)
             if kind == "anthropic":
                 base = re.sub(r"/v1$", "", base)  # Claude SDK 自己会加 /v1
+        else:
+            pasted_key = ""
         backup = next((u for _, u in PRESET_LINES if u != base), "") if base in dict(PRESET_LINES).values() else ""
         draft = {"type": kind, "base_url": base, "backup_url": backup}
 
@@ -327,9 +362,17 @@ def setup_wizard(old=None):
         same = old.get("api_key") and old.get("type") == kind
         hint = "（直接回车 = 沿用原来的密钥）" if same else ""
         console.print(Text(f"第 2 步 · 粘贴 API 密钥{hint}，输入时不会显示出来", style=f"bold {ACCENT}"))
-        key = ""
+        key = pasted_key
+        if key:
+            console.print(Text(f"  已从连接信息里读到密钥 {key[:6]}…{key[-4:]}", style="green"))
         while not key:
-            key = plain_prompt("🔑 ", is_password=True).strip() or (old.get("api_key", "") if same else "")
+            raw = plain_prompt("🔑 ", is_password=True)
+            key = parse_pasted(raw)[0] if raw.strip() else (old.get("api_key", "") if same else "")
+            if key and key != raw.strip():
+                console.print(Text(f"  已自动清理粘贴内容（去掉空格、换行、引号或长得像的字符）：{key[:6]}…{key[-4:]}",
+                                   style="green"))
+        if not key.isascii():
+            console.print(Text("  注意：密钥里有特殊字符，可能是复制时混进来的，最好重新复制", style="yellow"))
         draft["api_key"] = key
         if kind == "openai" and key.startswith("sk-ant-"):
             console.print(Text("  提示：这像是 Claude 官方密钥，Claude 官方请在第 1 步选「Claude 官方」", style="yellow"))
@@ -340,11 +383,25 @@ def setup_wizard(old=None):
                 models = list_models(draft)
         except Exception as e:
             code = error_code(e)
-            if code in (401, 403):
-                msg = "密钥不对，或者这个密钥没有权限"
+            detail = ""
+            if hasattr(e, "read"):
+                try:
+                    detail = e.read().decode("utf-8", "replace").strip()[:200]
+                except Exception:
+                    pass
+            elif getattr(e, "message", None):
+                detail = str(e.message)[:200]
+            if code == 401:
+                msg = "密钥不对（401）。检查是不是复制完整了、有没有多余的字符"
+            elif code == 403:
+                msg = "服务器拒绝访问（403）：密钥没有权限，或者被中转站拦截了"
             elif code:
                 msg = f"服务器返回错误 HTTP {code}"
             else:
+                msg = ""
+            if code and detail:
+                msg += f"\n服务器说：{detail}"
+            if not code:
                 msg = f"连不上 {base}\n{e}\n换一条线路再试试"
             console.print(Panel(Text(msg + "\n请重新填写。"), title="连接失败", border_style="red"))
             continue
@@ -705,6 +762,18 @@ def approve(name, state):
         console.print(Text("  请输入 y（允许）、a（都允许）或 n（拒绝）", style="red"))
 
 
+# 模型偶尔会用别的工具里常见的参数名（比如 file_path），换成我们的名字
+PARAM_ALIASES = {"file_path": "path", "filepath": "path", "file": "path", "filename": "path",
+                 "dir": "path", "directory": "path", "folder": "path", "cmd": "command",
+                 "old_string": "old_text", "new_string": "new_text", "old": "old_text", "new": "new_text",
+                 "text": "content", "data": "content"}
+
+
+def _warn(msg):
+    console.print(Text(f"  ⚠ {msg}", style="red"))
+    return msg
+
+
 class Denied(Exception):
     """用户拒绝了操作：整轮停下，等用户说怎么做。"""
 
@@ -714,16 +783,21 @@ def execute_tool(call, state):
     try:
         args = json.loads(call["function"].get("arguments") or "{}")
     except json.JSONDecodeError:
-        return "参数不是合法的 JSON，请重试"
+        return _warn("AI 给的操作参数格式不对，已让它重试")
     if not isinstance(args, dict):
-        return "参数必须是 JSON 对象，请重试"
+        return _warn("AI 给的操作参数格式不对，已让它重试")
     func = TOOL_FUNCS.get(name)
     if func is None:
-        return f"没有叫 {name} 的工具"
+        return _warn(f"AI 想用一个不存在的工具 {name}，已让它重试")
     schema = next(t["function"]["parameters"] for t in TOOLS if t["function"]["name"] == name)
+    for k in list(args):
+        alias = PARAM_ALIASES.get(k)
+        if k not in schema["properties"] and alias in schema["properties"] and alias not in args:
+            args[alias] = args.pop(k)
     bad = [k for k in schema["required"] if not isinstance(args.get(k), str)]
     if bad:
-        return f"缺少参数或参数不是文字：{', '.join(bad)}，请重试"
+        return _warn(f"AI 调用 {name} 时缺少参数 {', '.join(bad)}，已让它重试")
+    args = {k: v for k, v in args.items() if k in schema["properties"]}
     preview_tool(name, args)
     if not approve(name, state):
         console.print(Text("  ✗ 已拒绝，AI 已停下。你可以告诉它换个做法。\n", style="red"))
@@ -763,7 +837,8 @@ def stream_chat(base, key, model, messages, tools=None):
         payload["tools"] = tools
     req = urllib.request.Request(
         f"{base}/chat/completions", data=json.dumps(payload).encode(), method="POST",
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
+                 "User-Agent": USER_AGENT},
     )
     got_data, other = False, []
     with urllib.request.urlopen(req, timeout=300) as resp:
@@ -817,7 +892,8 @@ def refresh_balance(cfg, stats):
 
     def run():
         req = urllib.request.Request(f"{cfg['base_url']}/usage",
-                                     headers={"Authorization": f"Bearer {cfg['api_key']}"})
+                                     headers={"Authorization": f"Bearer {cfg['api_key']}",
+                                              "User-Agent": USER_AGENT})
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
                 stats["balance"] = float(json.load(resp)["balance"])
