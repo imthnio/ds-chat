@@ -43,7 +43,7 @@ from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 # 有的中转站会拦截 Python 默认的 User-Agent（返回 403），所以带上自己的名字
 USER_AGENT = f"ds-chat/{VERSION}"
 INSTALL_CMD = "curl -fsSL https://raw.githubusercontent.com/imthnio/ds-chat/main/install.sh | bash"
@@ -57,7 +57,7 @@ PRESET_LINES = [
     ("备用线路", "https://ai.bcol.cc/v1"),
 ]
 
-ACCENT = "#7aa2ff"
+ACCENT = "#7aa2ff"  # 主题色，随当前模型变化（见 apply_theme）
 DIM = "grey50"
 
 # 顶部 logo：按桌面上的图片取色画成的像素图，每个字符是一个像素，空格是透明。
@@ -612,6 +612,15 @@ def logo_key(model):
     return "other"
 
 
+# 主题色：边框、提示符、高亮文字都用它
+THEMES = {"claude": "#da7758", "deepseek": "#7aa2ff", "codex": "#d4d4d8", "other": "#7aa2ff"}
+
+
+def apply_theme(cfg):
+    global ACCENT
+    ACCENT = THEMES[logo_key(cfg["model"])]
+
+
 def brand_name(model):
     return {"claude": "Claude", "deepseek": "DeepSeek", "codex": "Codex"}.get(
         logo_key(model), re.split(r"[-_/:.]", model)[0].capitalize())
@@ -638,6 +647,7 @@ def draw_logo(key):
 
 
 def show_banner(cfg):
+    apply_theme(cfg)
     console.clear()
     key = logo_key(cfg["model"])
     title = Text.assemble((brand_name(cfg["model"]) + "\n", f"bold {LOGOS[key][0][next(iter(LOGOS[key][0]))]}"),
@@ -1372,7 +1382,7 @@ def refresh_balance(cfg, stats, before=None):
 
 
 class MenuBar:
-    """屏幕顶部菜单栏显示 💲余额（ai 打开时显示，退出后消失）。
+    """屏幕顶部菜单栏显示余额：橘色圆圈里一个 $，后面是数字（ai 打开时显示，退出后消失）。
     显示由一个很小的原生程序 dsbar 负责：它每 2 秒读一次 menubar.txt，文件超过 20 秒没更新就自己退出。
     开着几个 ai 窗口也只有一个 dsbar。"""
     BIN = os.path.join(APP_DIR, "dsbar")
@@ -1417,7 +1427,7 @@ class MenuBar:
             pass
 
     def update(self, balance):
-        self.text = f"💲{balance:.2f}" if isinstance(balance, float) else ""
+        self.text = f"{balance:.2f}" if isinstance(balance, float) else ""  # 图标由 dsbar 自己画
         if self.on:
             self._write()
 
@@ -2154,19 +2164,20 @@ def main():
     sess = {}  # 当前会话的 id，第一次保存时生成
     refresh_balance(cfg, stats)
 
-    style = Style.from_dict({
-        "prompt": f"bold {ACCENT}",
-        "box": ACCENT,
-        "bottom-toolbar": "noreverse #808080 bg:default",
-        "bottom-toolbar.box": f"noreverse {ACCENT} bg:default",
-        "bottom-toolbar.accent": f"noreverse {ACCENT} bg:default",
-        "bottom-toolbar.balance": "noreverse bold #4ade80 bg:default",
-    })
+    def make_style():  # 每次输入前按当前主题色重新生成
+        return Style.from_dict({
+            "prompt": f"bold {ACCENT}",
+            "box": ACCENT,
+            "bottom-toolbar": "noreverse #808080 bg:default",
+            "bottom-toolbar.box": f"noreverse {ACCENT} bg:default",
+            "bottom-toolbar.accent": f"noreverse {ACCENT} bg:default",
+            "bottom-toolbar.balance": "noreverse bold #4ade80 bg:default",
+        })
     os.makedirs(APP_DIR, exist_ok=True)
     input_history = os.path.join(APP_DIR, "history")
     open(input_history, "a").close()
     os.chmod(input_history, 0o600)  # 里面是你输入过的所有内容
-    session = PromptSession(history=FileHistory(input_history), style=style,
+    session = PromptSession(history=FileHistory(input_history), style=make_style(),
                             cursor=CursorShape.BLINKING_BEAM, reserve_space_for_menu=0,
                             erase_when_done=True, refresh_interval=1)
 
@@ -2211,9 +2222,10 @@ def main():
     elif args and args[0] in ("-r", "--resume", "--history"):
         history_menu(history, sess, cfg, stats)
     while True:
+        apply_theme(cfg)  # /api、/model、/setup 换了模型后，主题色跟着变
         console.print("╭" + "─" * (width() - 2) + "╮", style=ACCENT)
         try:
-            text = session.prompt(box_left, rprompt=[("class:box", "│")],
+            text = session.prompt(box_left, rprompt=[("class:box", "│")], style=make_style(),
                                   bottom_toolbar=toolbar, default=prefill).strip()
             prefill = ""
         except KeyboardInterrupt:
