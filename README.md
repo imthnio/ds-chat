@@ -27,6 +27,8 @@ curl -fsSL https://raw.githubusercontent.com/imthnio/ds-chat/main/install.sh | b
 ```bash
 ai            # 开始聊天
 ai --setup    # 重新设置线路、密钥、默认模型
+ai --update   # 更新到最新版
+ai --version  # 查看版本
 ```
 
 聊天时可用的命令：
@@ -44,7 +46,13 @@ ai --setup    # 重新设置线路、密钥、默认模型
 
 ## 更新
 
-再运行一次安装命令即可，已有的设置会保留。
+已经装过的电脑，再运行一次上面的安装命令就会自动更新，或者直接：
+
+```bash
+ai --update
+```
+
+线路、密钥、默认模型等设置都会保留。
 
 ## 文件位置
 

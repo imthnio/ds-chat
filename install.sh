@@ -1,7 +1,7 @@
 #!/bin/bash
 # ds-chat 一键安装脚本
 #   curl -fsSL https://raw.githubusercontent.com/imthnio/ds-chat/main/install.sh | bash
-# 重复运行 = 更新到最新版，已有的设置会保留。
+# 已经装过再运行一次 = 更新到最新版（也可以直接运行 ai --update），已有的设置会保留。
 set -e
 
 REPO_RAW="https://raw.githubusercontent.com/imthnio/ds-chat/main"
@@ -13,7 +13,13 @@ blue()  { printf '\033[1;34m%s\033[0m\n' "$*"; }
 green() { printf '\033[1;32m%s\033[0m\n' "$*"; }
 red()   { printf '\033[1;31m%s\033[0m\n' "$*"; }
 
-blue "==> 安装 ds-chat"
+ver() { [ -f "$1" ] && sed -n 's/^VERSION = "\(.*\)"/\1/p' "$1" || true; }
+OLD_VERSION="$(ver "$APP_DIR/ds_chat.py")"
+if [ -n "$OLD_VERSION" ]; then
+    blue "==> 检测到已安装 ds-chat ${OLD_VERSION}，开始更新"
+else
+    blue "==> 安装 ds-chat"
+fi
 
 # 1. Python（macOS 自带的 python3 需要先装“命令行开发工具”）
 if [ "$(uname)" = "Darwin" ] && ! xcode-select -p >/dev/null 2>&1; then
@@ -70,15 +76,22 @@ case ":$PATH:" in
         ;;
 esac
 
-green "==> 安装完成"
+NEW_VERSION="$(ver "$APP_DIR/ds_chat.py")"
+if [ -z "$OLD_VERSION" ]; then
+    green "==> 安装完成（版本 ${NEW_VERSION}）"
+elif [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
+    green "==> 已经是最新版 ${NEW_VERSION}"
+else
+    green "==> 更新完成：${OLD_VERSION} → ${NEW_VERSION}"
+fi
 
 # 5. 第一次安装：进入设置向导（填线路、密钥、模型）
 if [ ! -f "$CONFIG_FILE" ]; then
-    # curl | bash 时标准输入是管道；macOS 上不能直接读 /dev/tty，要换成真实的终端设备
+    # curl | bash 时标准输入是管道，改从终端读键盘
     if [ -t 0 ]; then
         "$BIN_DIR/ai" --setup
-    elif TTY_DEV="$(tty < /dev/tty 2>/dev/null)" && [ -r "$TTY_DEV" ]; then
-        "$BIN_DIR/ai" --setup < "$TTY_DEV"
+    elif [ -r /dev/tty ]; then
+        "$BIN_DIR/ai" --setup < /dev/tty
     else
         echo "运行 ai --setup 完成设置。"
     fi

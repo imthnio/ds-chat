@@ -2,9 +2,11 @@
 
 配置保存在 ~/.config/ds-chat/config.json，第一次运行（或输入 /setup）时会引导填写。
 """
+import asyncio
 import json
 import os
 import re
+import selectors
 import shutil
 import sys
 import threading
@@ -26,7 +28,8 @@ from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
+INSTALL_CMD = "curl -fsSL https://raw.githubusercontent.com/imthnio/ds-chat/main/install.sh | bash"
 APP_DIR = os.path.expanduser("~/.local/share/ds-chat")
 CONFIG_DIR = os.path.expanduser("~/.config/ds-chat")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
@@ -49,8 +52,24 @@ LOGO = r"""
  ╚═════╝ ╚══════╝╚══════╝╚═╝     ╚══════╝╚══════╝╚══════╝╚═╝  ╚═╝
 """
 
+if sys.platform == "darwin":
+    # macOS 的 kqueue 不支持 /dev/tty（curl | bash 安装时就是从它读键盘），改用 select
+    class _SelectLoopPolicy(asyncio.DefaultEventLoopPolicy):
+        def new_event_loop(self):
+            return asyncio.SelectorEventLoop(selectors.SelectSelector())
+
+    asyncio.set_event_loop_policy(_SelectLoopPolicy())
+
 console = Console(highlight=False)
-plain = PromptSession()  # 菜单、向导用的简单输入
+_plain = None
+
+
+def plain_prompt(*args, **kwargs):
+    """菜单、向导用的简单输入（用到时才创建，免得 ai --version 之类也去接管终端）。"""
+    global _plain
+    if _plain is None:
+        _plain = PromptSession()
+    return _plain.prompt(*args, **kwargs)
 
 
 # ───────────────────────── 配置 ─────────────────────────
@@ -91,6 +110,12 @@ def fetch_models(base, key):
     return sorted(m["id"] for m in data.get("data", []) if m.get("id"))
 
 
+def test_model(base, key, model):
+    """用和聊天一样的流式请求试一次，收到第一块数据就算成功。"""
+    for _ in stream_chat(base, key, model, [{"role": "user", "content": "hi"}]):
+        return
+
+
 def ask_choice(title, rows, default=1):
     """rows: [(名称, 说明)]，返回 1 开始的序号。"""
     table = Table(box=None, padding=(0, 2), show_header=False)
@@ -98,7 +123,7 @@ def ask_choice(title, rows, default=1):
         table.add_row(Text(f"{i}", style=f"bold {ACCENT}"), Text(name, style="bold"), Text(desc, style=DIM))
     console.print(Panel(table, title=title, title_align="left", border_style=ACCENT))
     while True:
-        ans = plain.prompt(HTML(f"<b>输入序号</b> (直接回车 = {default}): ")).strip()
+        ans = plain_prompt(HTML(f"<b>输入序号</b> (直接回车 = {default}): ")).strip()
         if not ans:
             return default
         if ans.isdigit() and 1 <= int(ans) <= len(rows):
@@ -124,7 +149,7 @@ def setup_wizard(old=None):
         else:
             url = ""
             while not url:
-                url = plain.prompt(HTML("<b>接口地址</b> (例如 https://example.com): ")).strip()
+                url = plain_prompt(HTML("<b>接口地址</b> (例如 https://example.com): ")).strip()
             base = normalize_base(url)
         backup = next((u for _, u in PRESET_LINES if u != base), "") if n <= len(PRESET_LINES) else ""
 
@@ -134,7 +159,7 @@ def setup_wizard(old=None):
         console.print(Text(f"第 2 步 · 粘贴 API 密钥{hint}，输入时不会显示出来", style=f"bold {ACCENT}"))
         key = ""
         while not key:
-            key = plain.prompt("🔑 ", is_password=True).strip() or old.get("api_key", "")
+            key = plain_prompt("🔑 ", is_password=True).strip() or old.get("api_key", "")
 
         # 测试连接
         try:
@@ -154,19 +179,29 @@ def setup_wizard(old=None):
         console.print(Text(f"  ✓ 连接成功，找到 {len(models)} 个模型\n", style="green"))
         break
 
-    # 第 3 步：默认模型
-    default = next((i for i, m in enumerate(models, 1) if "pro" in m.lower()), 1)
+    # 第 3 步：默认模型（选完实际试一次，有的中转站会列出用不了的模型）
+    default = next((i for i, m in enumerate(models, 1) if "pro" in m.lower() and "/" not in m), 1)
     if old.get("model") in models:
         default = models.index(old["model"]) + 1
-    n = ask_choice("第 3 步 · 选择默认模型", [(m, "") for m in models], default)
+    while True:
+        n = ask_choice("第 3 步 · 选择默认模型", [(m, "") for m in models], default)
+        model = models[n - 1]
+        try:
+            with console.status(f"正在测试 {model}…", spinner="dots"):
+                test_model(base, key, model)
+            break
+        except Exception as e:
+            console.print(Panel(f"{model} 现在用不了（{e}），请换一个。",
+                                title="模型不可用", border_style="red"))
+            default = 1 if n != 1 else min(2, len(models))
 
-    cfg = {"base_url": base, "backup_url": backup, "api_key": key, "model": models[n - 1]}
+    cfg = {"base_url": base, "backup_url": backup, "api_key": key, "model": model}
     save_config(cfg)
     console.print(Panel(Text.assemble(
         ("✓ 设置完成！\n\n", "bold green"),
         ("以后在终端输入 ", ""), ("ai", f"bold {ACCENT}"), (" 就能开始聊天。", ""),
     ), border_style="green", padding=(1, 2)))
-    plain.prompt(HTML("<grey>按回车开始…</grey>"))
+    plain_prompt(HTML("<grey>按回车开始…</grey>"))
     return cfg
 
 
@@ -217,6 +252,7 @@ def show_help():
         ("/line", "切换到备用线路（主线路连不上时用）"),
         ("/clear", "清空对话，重新开始"),
         ("/setup", "重新设置线路、密钥、默认模型"),
+        ("ai --update", "（在终端里运行）更新到最新版"),
         ("/help", "显示这个帮助"),
         ("/exit", "退出（也可以按 Ctrl+D）"),
         ("Esc 然后 回车", "换行（写多行内容）"),
@@ -359,6 +395,8 @@ def main():
     if args and args[0] in ("-v", "--version"):
         print(f"ds-chat {VERSION}")
         return
+    if args and args[0] in ("--update", "update"):
+        os.execvp("bash", ["bash", "-c", INSTALL_CMD])
     cfg = load_config()
     if cfg is None or (args and args[0] == "--setup"):
         try:
@@ -466,7 +504,14 @@ def main():
         except urllib.error.HTTPError as e:
             history.pop()
             detail = e.read().decode("utf-8", "replace")[:300]
-            console.print(Panel(f"HTTP {e.code}：{detail}", title="出错了", border_style="red"), "\n")
+            tip = ""
+            if e.code >= 500 or e.code == 404:
+                tip = "\n这个模型可能暂时不可用，输入 /model 换一个试试。"
+            elif e.code in (401, 403):
+                tip = "\n密钥无效或没有权限，输入 /setup 重新填写。"
+            elif e.code == 429:
+                tip = "\n请求太频繁或余额不足，稍等一下再试。"
+            console.print(Panel(f"HTTP {e.code}：{detail}{tip}", title="出错了", border_style="red"), "\n")
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             history.pop()
             tip = "输入 /line 切换到备用线路再试试。" if cfg.get("backup_url") else "检查网络，或输入 /setup 换线路。"
