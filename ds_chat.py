@@ -43,7 +43,7 @@ from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
-VERSION = "1.4.1"
+VERSION = "1.4.2"
 # 有的中转站会拦截 Python 默认的 User-Agent（返回 403），所以带上自己的名字
 USER_AGENT = f"ds-chat/{VERSION}"
 INSTALL_CMD = "curl -fsSL https://raw.githubusercontent.com/imthnio/ds-chat/main/install.sh | bash"
@@ -1797,7 +1797,7 @@ class TurnView:
     def __rich_console__(self, console, options):
         height = options.max_height or console.height
         box = self._box() if self.typeahead.active else None
-        reserve = (3 if box else 0) + (1 if self.status else 0) + 1
+        reserve = (2 if box else 0) + (1 if self.status else 0) + 1
         if self.stream is not None:
             yield _Tail(self.stream, max(min(height - reserve, self.MAX_LINES), 3))
         if self.status:
@@ -1807,21 +1807,20 @@ class TurnView:
             yield box
 
     def _box(self):
+        """底部输入行。必须是整块显示的最后一行、后面不留空格：画完后光标就停在你打字的位置，
+        拼音输入法的候选拼音才会显示在这里（光标被隐藏或乱跑时，macOS「终端」用输入法打字会直接崩溃）。"""
         with self.typeahead.lock:
             buf, queued = self.typeahead.buf, len(self.typeahead.queue)
-        if buf:
-            body = Text.assemble(("❯ ", f"bold {ACCENT}"), buf, ("▌", ACCENT))
-        else:
-            body = Text.assemble(("❯ ", f"bold {ACCENT}"), ("▌", ACCENT),
-                                 ("  可以继续输入补充内容，回车发送，AI 做完这一步就会看到", DIM))
-        title = f"已排队 {queued} 条补充" if queued else None
-        return Panel(body, border_style=DIM, title=title, title_align="left", height=3)
+        hint = f" 已排队 {queued} 条补充 " if queued else " 可以继续输入补充内容，回车发送，AI 做完这一步就会看到 "
+        line = Text("──" + hint, style=DIM)
+        return Group(line, Text.assemble(("❯ ", f"bold {ACCENT}"), buf))
 
     def start(self):
         self.typeahead.start()
         # 不用 Live 自带的定时刷新（不管有没有变化都重画）；由 _pump 在有变化时才重画，最多每秒 8 次
         self.live = Live(self, console=console, auto_refresh=False, transient=True, vertical_overflow="crop")
         self.live.start(refresh=True)
+        self._show_cursor()
         self._drawing = True
         threading.Thread(target=self._pump, args=(self.live,), daemon=True).start()
 
@@ -1861,7 +1860,13 @@ class TurnView:
         finally:
             self.typeahead.start()
             self.live.start(refresh=True)
+            self._show_cursor()
             self._drawing = True
+
+    def _show_cursor(self):
+        """Live 启动时会隐藏光标；这里马上再显示出来（原因见 _box）。"""
+        if self.typeahead.active:
+            console.show_cursor(True)
 
     @contextmanager
     def busy(self, text):
