@@ -43,7 +43,7 @@ from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
-VERSION = "1.4.2"
+VERSION = "1.4.3"
 # 有的中转站会拦截 Python 默认的 User-Agent（返回 403），所以带上自己的名字
 USER_AGENT = f"ds-chat/{VERSION}"
 INSTALL_CMD = "curl -fsSL https://raw.githubusercontent.com/imthnio/ds-chat/main/install.sh | bash"
@@ -1448,16 +1448,13 @@ def fetch_balance(cfg):
 def refresh_balance(cfg, stats, before=None):
     """后台查余额，结果写进 stats["balance"]（查不到为 "n/a"）。
     传入 before（这次提问前的余额）时，顺便算出这次花了多少，写进 stats["last_cost"]。"""
-    # 使用时间戳来标记查询，确保只有最新的查询结果会被使用
+    # 同时有好几次查询时（比如回答完刚查、你又点了菜单栏），只用最后发起的那次的结果，防止旧结果覆盖新结果
     query_time = time.time()
-    if not hasattr(stats, '_last_query_time'):
-        stats._last_query_time = 0
-    stats._last_query_time = query_time
-    
+    stats["balance_query"] = query_time
+
     def run():
         bal = fetch_balance(cfg)
-        # 只有当这是最新的查询时才更新结果（防止旧查询覆盖新结果）
-        if query_time >= stats._last_query_time:
+        if query_time >= stats.get("balance_query", 0):
             if bal is None:
                 if not isinstance(stats["balance"], float):  # 偶尔查失败时保留上一次的余额
                     stats["balance"] = "n/a"
@@ -2482,6 +2479,7 @@ def main():
             refresh_balance(cfg, stats, before=bal_before)
         except urllib.error.HTTPError as e:
             del history[before:]
+            prefill = text  # 把刚才的问题放回输入框，换个模型或充值后直接回车重发
             detail = (getattr(e, "ds_body", None) or e.read().decode("utf-8", "replace"))[:300]
             tip = ""
             if images and e.code == 400:
@@ -2495,10 +2493,12 @@ def main():
             console.print(Panel(Text(f"HTTP {e.code}：{detail}{tip}"), title="出错了", border_style="red"), "\n")
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             del history[before:]
+            prefill = text  # 把刚才的问题放回输入框，换个模型或充值后直接回车重发
             tip = "输入 /line 切换到备用线路再试试。" if cfg.get("backup_url") else "检查网络，或输入 /setup 换线路。"
             console.print(Panel(Text(f"网络连接失败：{e}\n{tip}"), title="出错了", border_style="red"), "\n")
         except Exception as e:  # 兜底：出什么错都不退出程序，对话也不丢（Claude SDK 的错误也在这里）
             del history[before:]
+            prefill = text  # 把刚才的问题放回输入框，换个模型或充值后直接回车重发
             code = error_code(e)
             tip = ""
             if images and code == 400:
@@ -2512,7 +2512,8 @@ def main():
             elif type(e).__name__ in ("APIConnectionError", "APITimeoutError"):
                 tip = "\n网络连接失败，检查网络或代理后再试。"
             console.print(Panel(Text(f"{e}\n（{type(e).__name__}）{tip}"), title="出错了", border_style="red"), "\n")
-        # 不管成功还是失败，都保存会话（这样即使余额不足，之前的对话也不会丢失）
+        if len(history) == before and prefill == text:
+            console.print(Text("  ↩ 刚才的问题已经放回输入框，换个模型（/model）或充值后直接回车就能重发\n", style=DIM))
         try:
             save_session(sess, history, cfg)
         except OSError as e:
