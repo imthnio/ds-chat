@@ -43,7 +43,7 @@ from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 # 有的中转站会拦截 Python 默认的 User-Agent（返回 403），所以带上自己的名字
 USER_AGENT = f"ds-chat/{VERSION}"
 INSTALL_CMD = "curl -fsSL https://raw.githubusercontent.com/imthnio/ds-chat/main/install.sh | bash"
@@ -200,7 +200,8 @@ def load_config():
     if not profiles:
         return None
     STORE.update(profiles=profiles, agent=data.get("agent", True),
-                 active=min(max(int(data.get("active") or 0), 0), len(profiles) - 1))
+                 active=min(max(int(data.get("active") or 0), 0), len(profiles) - 1),
+                 menubar=data.get("menubar", True))
     return active_profile()
 
 
@@ -596,6 +597,8 @@ def setup_wizard(old=None):
             pasted_key = ""
         backup = next((u for _, u in PRESET_LINES if u != base), "") if base in dict(PRESET_LINES).values() else ""
         draft = {"type": kind, "base_url": base, "backup_url": backup}
+        if old.get("effort"):  # 修改时保留原来的思考深度
+            draft["effort"] = old["effort"]
 
         # 第 2 步：密钥
         console.print()
