@@ -680,3 +680,21 @@ audio.att-media{background:none;width:260px}
 .join-note{margin:-10px 0 18px;padding:10px 12px;border-radius:12px;background:color-mix(in srgb,#E11D48 8%,var(--ux-surface));color:#BE123C;font-size:12.5px;line-height:1.5;font-weight:650}
 :root[data-theme="dark"] .join-note{color:#FB7185}
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .join-note{color:#FB7185}}
+
+/* ---------- 创建者的密钥 ---------- */
+.key-show{display:flex;align-items:center;gap:6px;margin-top:10px}
+.key-show code{flex:1;min-width:0;padding:9px 11px;border-radius:11px;background:var(--ux-surface);box-shadow:inset 0 0 0 1px var(--ux-line);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;font-weight:700;word-break:break-all;user-select:all}
+.key-show button,.mine-act{height:34px;padding:0 11px;flex:none;border:0;border-radius:10px;background:var(--ux-surface);box-shadow:inset 0 0 0 1px var(--ux-line);color:var(--ux-ink);font-size:12.5px;font-weight:750}
+.key-show button.done{color:var(--ux-mint)}
+.mine{margin-top:16px;padding:12px;border-radius:16px;background:var(--ux-surface-2)}
+.mine h4{margin:0 0 8px;font-size:13px;font-weight:800}
+.mine h4 small{margin-left:4px;font-size:11px;font-weight:600;color:var(--ux-ink-3)}
+.mine ul{margin:0;padding:0;list-style:none;display:grid;gap:6px;max-height:220px;overflow-y:auto}
+.mine li{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.mine-go{flex:1;min-width:0;height:40px;padding:0 12px;border:0;border-radius:11px;display:flex;align-items:center;justify-content:space-between;gap:8px;background:var(--ux-surface);box-shadow:inset 0 0 0 1px var(--ux-line);text-align:left}
+.mine-go:hover{box-shadow:inset 0 0 0 1.5px var(--ux-accent)}
+.mine-go b{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;letter-spacing:.06em}
+.mine-go small{font-size:11.5px;color:var(--ux-ink-3)}
+.mine-act{height:40px}
+.mine-act[data-act="del"]{width:40px;padding:0;color:var(--ux-ink-3);font-size:16px}
+.mine-key{flex-basis:100%;padding:8px 10px;border-radius:10px;background:var(--ux-surface);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;word-break:break-all;user-select:all}

@@ -100,16 +100,26 @@
     setShow(true); clearBad(); meterUpdate();
     keyIn.focus({ preventScroll: true });
   });
-  $('copy').addEventListener('click', function () {
-    var btn = this, label = btn.querySelector('span'), v = keyIn.value.trim();
-    if (!v) { fail('先输入或生成一段密钥'); return; }
-    var ok = function () { btn.classList.add('done'); label.textContent = '已复制'; setTimeout(function () { btn.classList.remove('done'); label.textContent = '复制密钥'; }, 1600); };
-    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(v).then(ok, legacy); else legacy();
-    function legacy() {
-      var was = keyIn.type; keyIn.type = 'text'; keyIn.select();
+  // 复制文字：优先用剪贴板接口，不行就借一个临时输入框
+  function copyText(v, ok) {
+    var legacy = function () {
+      var t = document.createElement('textarea');
+      t.value = v; t.setAttribute('readonly', ''); t.style.position = 'fixed'; t.style.opacity = '0';
+      document.body.appendChild(t); t.select();
       try { document.execCommand('copy'); ok(); } catch (e) { UI.toast('err', '复制失败', '请手动选中密钥复制'); }
-      keyIn.type = was; keyIn.setSelectionRange(v.length, v.length);
-    }
+      t.remove();
+    };
+    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(v).then(ok, legacy); else legacy();
+  }
+  function flash(btn, text, back) {
+    var label = btn.querySelector('span') || btn;
+    btn.classList.add('done'); label.textContent = text;
+    setTimeout(function () { btn.classList.remove('done'); label.textContent = back; }, 1600);
+  }
+  $('copy').addEventListener('click', function () {
+    var btn = this, v = keyIn.value.trim();
+    if (!v) { fail('先输入或生成一段密钥'); return; }
+    copyText(v, function () { flash(btn, '已复制', '复制密钥'); });
   });
 
   var joining = false;
@@ -123,6 +133,7 @@
     go.classList.add('busy'); go.setAttribute('aria-label', '正在进入');
     try {
       var r = await deriveRoom(key);
+      r.key = key;  // 只留在这个页面的内存里；创建者的会另外存到本机（见 rememberKey）
       await enterRoom(r);
       go.classList.remove('busy'); go.classList.add('ok'); go.setAttribute('aria-label', '已进入');
       await new Promise(function (res) { setTimeout(res, rm() ? 0 : 550); });
@@ -182,6 +193,7 @@
       skew = m.now - Date.now() / 1000;
       info.creator = m.creator; info.admin = m.admin; info.destroyAt = m.destroyAt; info.own = m.own; info.policyAt = m.policyAt; info.online = m.online; info.limit = m.limit;
       if (m.token) store.set('dschat:tok:' + room.id, m.token);
+      if (m.creator) rememberKey();
       var wasHere = store.get('dschat:seen:' + room.id);
       store.set('dschat:me:' + room.id, me);
       store.set('dschat:seen:' + room.id, '1');
@@ -241,7 +253,7 @@
   }
 
   function now() { return Date.now() / 1000 + skew; }
-  function forget(id) { ['tok', 'me', 'seen'].forEach(function (k) { store.del('dschat:' + k + ':' + id); }); }
+  function forget(id) { ['tok', 'me', 'seen', 'key'].forEach(function (k) { store.del('dschat:' + k + ':' + id); }); }
   function leaveQuiet() {
     leaving = true; clearTimeout(retryT);
     if (ws) { var s = ws; ws = null; try { s.close(); } catch (e) {} }
@@ -270,6 +282,7 @@
     $('log').innerHTML = ''; $('msg').value = ''; sendState();
     info.destroyAt = info.own = info.policyAt = null; renderTimer();
     checkCreation();
+    renderMine();
     keyIn.focus({ preventScroll: true });
   }
   // 管理员关闭了新建房间时，在输入密钥的卡片上先提示一下
@@ -294,10 +307,73 @@
     $('limit-now').textContent = '最多 ' + info.limit + ' 人';
     $('sheet-limit').textContent = '最多 ' + info.limit + ' 人';
   }
+  /* ---------- 创建者的密钥：只存在这台设备的浏览器里，服务器不知道 ---------- */
+  function rememberKey() {
+    if (!room || !room.key) return;
+    var old = savedKey(room.id);
+    store.set('dschat:key:' + room.id, JSON.stringify({ k: room.key, c: room.code, t: old ? old.t : Date.now() }));
+  }
+  function savedKey(id) {
+    try { var v = JSON.parse(store.get('dschat:key:' + id) || 'null'); return v && typeof v.k === 'string' ? v : null; } catch (e) { return null; }
+  }
+  function savedRooms() {
+    var list = [];
+    try {
+      for (var i = 0; i < localStorage.length; i++) {
+        var k = localStorage.key(i);
+        if (k && k.indexOf('dschat:key:') === 0) { var v = savedKey(k.slice(11)); if (v) { v.id = k.slice(11); list.push(v); } }
+      }
+    } catch (e) {}
+    return list.sort(function (a, b) { return b.t - a.t; });
+  }
+  var keyShown = false;
+  function renderKey() {
+    var on = !!(info.creator && room && room.key);
+    $('key-sec').hidden = !on;
+    if (!on) return;
+    $('key-text').textContent = keyShown ? room.key : room.key.replace(/./g, '•').slice(0, 24);
+    $('key-toggle').textContent = keyShown ? '隐藏' : '显示';
+  }
+  $('key-toggle').addEventListener('click', function () { keyShown = !keyShown; renderKey(); });
+  $('key-copy').addEventListener('click', function () {
+    var btn = this;
+    if (room && room.key) copyText(room.key, function () { flash(btn, '已复制', '复制'); });
+  });
+  function renderMine() {
+    var list = savedRooms(), box = $('mine-list');
+    $('mine').hidden = !list.length;
+    box.innerHTML = list.map(function (r) {
+      return '<li><button type="button" class="mine-go" data-id="' + UI.esc(r.id) + '"><b>' + UI.esc(r.c || r.id.slice(0, 6).toUpperCase()) + '</b><small>' + UI.fmtDay(r.t / 1000) + '创建</small></button>' +
+        '<button type="button" class="mine-act" data-act="show" data-id="' + UI.esc(r.id) + '">查看密钥</button>' +
+        '<button type="button" class="mine-act" data-act="del" data-id="' + UI.esc(r.id) + '" aria-label="从本机删除这条记录">×</button>' +
+        '<code class="mine-key" hidden></code></li>';
+    }).join('');
+  }
+  $('mine-list').addEventListener('click', function (e) {
+    var b = e.target.closest('button[data-id]');
+    if (!b) return;
+    var id = b.getAttribute('data-id'), saved = savedKey(id), li = b.closest('li');
+    if (!saved) { renderMine(); return; }
+    if (b.classList.contains('mine-go')) {
+      keyIn.value = saved.k; clearBad(); meterUpdate();
+      form.requestSubmit ? form.requestSubmit() : form.dispatchEvent(new Event('submit', { cancelable: true }));
+    } else if (b.getAttribute('data-act') === 'show') {
+      var code = li.querySelector('.mine-key');
+      if (code.hidden) {
+        code.textContent = saved.k; code.hidden = false; b.textContent = '复制';
+      } else {
+        copyText(saved.k, function () { b.textContent = '已复制'; setTimeout(function () { b.textContent = '复制'; }, 1600); });
+      }
+    } else if (b.getAttribute('data-act') === 'del') {
+      store.del('dschat:key:' + id); renderMine();
+    }
+  });
+
   function renderRole() {
     var can = info.creator || info.admin;
     $('manage').hidden = !can; $('no-manage').hidden = can;
     $('sheet-role').textContent = info.creator ? '你是创建者' : info.admin ? '你是管理员' : '你是成员';
+    keyShown = false; renderKey();
   }
   var tick = 0;
   function renderTimer() {
@@ -692,5 +768,6 @@
 
   meterUpdate();
   checkCreation();
+  renderMine();
   keyIn.focus({ preventScroll: true });
 })();
