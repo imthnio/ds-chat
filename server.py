@@ -230,19 +230,29 @@ def encode_response(resp, head_only=False, keep_alive=True, length=None):
 
 
 class Static:
-    """static 目录里的文件启动时读进内存（一共几十 KB），顺带准备好 gzip 版本。"""
+    """static 目录里的文件启动时读进内存（一共几十 KB），顺带准备好 gzip 版本。
+
+    页面里引用的 /static/xxx.css、/static/xxx.js 会自动加上 ?v=内容指纹：文件一改地址就变，
+    Cloudflare 和浏览器的旧缓存都用不上，更新后不会出现“新页面配旧样式”。"""
 
     TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
              ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png"}
 
     def __init__(self, root):
         self.files = {}
+        raw_files = {}
         for name in os.listdir(root):
+            if os.path.splitext(name)[1] in self.TYPES:
+                with open(os.path.join(root, name), "rb") as f:
+                    raw_files[name] = f.read()
+        self.version = {n: hashlib.sha256(b).hexdigest()[:12] for n, b in raw_files.items()}
+        for name, raw in raw_files.items():
             ext = os.path.splitext(name)[1]
-            if ext not in self.TYPES:
-                continue
-            with open(os.path.join(root, name), "rb") as f:
-                raw = f.read()
+            if ext == ".html":
+                for asset, ver in self.version.items():
+                    if not asset.endswith(".html"):
+                        ref = f'/static/{asset}"'.encode()
+                        raw = raw.replace(ref, f'/static/{asset}?v={ver}"'.encode())
             gz = gzip.compress(raw, 9) if ext != ".png" else None
             etag = '"' + hashlib.sha256(raw).hexdigest()[:16] + '"'
             self.files[name] = (raw, gz, self.TYPES[ext], etag)
@@ -251,7 +261,11 @@ class Static:
         if name not in self.files:
             raise HTTPError(404, "没有这个文件")
         raw, gz, ctype, etag = self.files[name]
-        headers = {"Cache-Control": "no-cache", "ETag": etag, "Vary": "Accept-Encoding"}
+        if request.query.get("v") == self.version.get(name):
+            cache = "public, max-age=31536000, immutable"  # 带指纹的地址内容永远不变，可以放心长期缓存
+        else:
+            cache = "no-cache"
+        headers = {"Cache-Control": cache, "ETag": etag, "Vary": "Accept-Encoding"}
         if request.headers.get("if-none-match") == etag:
             resp = Response(b"", 304, ctype, headers)
             return resp
