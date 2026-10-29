@@ -55,6 +55,11 @@
           <button type="button" id="copy"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="8.5" height="8.5" rx="2"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/></svg><span>复制密钥</span></button>
         </div>
 
+        <div class="mine" id="mine" hidden>
+          <h4>我创建的房间 <small>保存在这台设备的浏览器里</small></h4>
+          <ul id="mine-list"></ul>
+        </div>
+
         <button class="u062-go" type="submit" id="join-go"><span>进入房间</span><i aria-hidden="true"></i><svg viewBox="0 0 26 26" aria-hidden="true"><path d="M6 13.5l4.5 4.5L20 8.5"/></svg></button>
       </form>
     </div>
@@ -89,6 +94,12 @@
       <span class="sheet-grip" aria-hidden="true"></span>
       <h4 id="sheet-title">房间设置</h4>
       <p class="sheet-meta">房间码 <b id="sheet-code"></b> · <span id="sheet-role"></span> · <span id="sheet-limit"></span><br>双方看到的房间码一样，就说明在同一个房间。</p>
+
+      <div class="sheet-sec" id="key-sec" hidden>
+        <h5>房间密钥</h5>
+        <p>只保存在这台设备的浏览器里，服务器不知道。忘了的话在这里找回；换设备或清浏览器数据后就没有了。</p>
+        <div class="key-show"><code id="key-text"></code><button type="button" id="key-toggle">显示</button><button type="button" id="key-copy"><span>复制</span></button></div>
+      </div>
 
       <div id="manage">
         <div class="sheet-sec">
