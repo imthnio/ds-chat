@@ -1,0 +1,98 @@
+<!doctype html>
+<!-- 界面元素来自 Lucian UX/UI Prompt：#062 #017 #269 #070 · MIT License (c) 2026 Seokwoooo · https://lucianlabs.dev/uxui-prompt/ -->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>ds-chat 管理后台</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='10' fill='%2316151B'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/style.css">
+<script src="/static/ui.js"></script>
+</head>
+<body>
+
+<div class="corner">
+  <a href="/">聊天</a>
+  <button type="button" id="logout" hidden>退出登录</button>
+  <button type="button" id="theme"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg></button>
+</div>
+
+<!-- ========== 登录 ========== -->
+<main class="view" id="view-login" hidden>
+  <!-- Lucian UX/UI Prompt #062 · MIT License (c) 2026 Seokwoooo · https://lucianlabs.dev/uxui-prompt/#062 -->
+  <div class="ux u062 join" id="login-card">
+    <form class="u062-pane u062-login" id="login-form" novalidate>
+      <span class="u062-logo" aria-hidden="true"></span>
+      <h3>管理后台</h3>
+      <p>管理员可以查看全部房间，调整人数上限，立即销毁或设销毁倒计时。看不到聊天内容。</p>
+      <div class="u062-f u062-pw" id="pw-field">
+        <label for="pw">管理员密码</label>
+        <span class="u062-caps" id="caps" aria-live="polite">大写锁定已开启</span>
+        <div class="u062-box"><input id="pw" type="password" placeholder="输入密码" autocomplete="current-password" aria-describedby="pw-err"><button class="u062-eye" type="button" aria-pressed="false" aria-label="显示密码"><svg viewBox="0 0 24 24"><g class="u062-lid"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></g><path class="u062-slash" d="M4 4l16 16"/></svg></button></div>
+        <div class="u062-err"><span role="alert" id="pw-err"></span></div>
+      </div>
+      <button class="u062-go" type="submit" id="login-go"><span>登录</span><i aria-hidden="true"></i><svg viewBox="0 0 26 26" aria-hidden="true"><path d="M6 13.5l4.5 4.5L20 8.5"/></svg></button>
+    </form>
+  </div>
+</main>
+
+<!-- ========== 房间列表 ========== -->
+<main class="view" id="view-rooms" hidden>
+  <div class="admin-wrap">
+    <div class="admin-head">
+      <span class="u062-logo" aria-hidden="true"></span>
+      <h1>全部房间</h1>
+      <button class="btn soft" type="button" id="refresh" style="flex:none">刷新</button>
+      <p>房间码是房间号的前 6 位，和聊天页里显示的一样。列表每 10 秒自动刷新。</p>
+    </div>
+    <div class="admin-stats" id="stats"></div>
+    <div class="rooms" id="rooms"></div>
+  </div>
+</main>
+
+<!-- 管理单个房间 -->
+<div class="admin-sheet" id="manage-sheet">
+  <div class="sheet-dim" id="sheet-dim" aria-hidden="true"></div>
+  <section class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+    <span class="sheet-grip" aria-hidden="true"></span>
+    <h4 id="sheet-title">房间 <span id="sheet-code"></span></h4>
+    <p class="sheet-meta" id="sheet-meta"></p>
+    <div class="sheet-sec">
+      <h5>人数上限</h5>
+      <p>上限包含创建者，创建者的位置一直保留；满了之后新的人进不来，已在房间里的人不受影响。</p>
+      <!-- Lucian UX/UI Prompt #018 · MIT License (c) 2026 Seokwoooo · https://lucianlabs.dev/uxui-prompt/#018 -->
+      <div class="ux u018 limit" id="limit">
+        <p><b id="limit-now">最多 7 人</b><span id="limit-online"></span></p>
+        <div class="u018-step" role="group" aria-label="人数上限">
+      <button class="u018-b mi" type="button" aria-label="减少一人"><svg viewBox="0 0 20 20"><path d="M5 10h10"/></svg></button>
+      <span class="u018-num" aria-live="polite" aria-atomic="true"><span class="u018-sr"></span><span class="u018-col" aria-hidden="true"></span><span class="u018-col" aria-hidden="true"></span></span>
+      <button class="u018-b pl" type="button" aria-label="增加一人"><svg viewBox="0 0 20 20"><path d="M10 5v10M5 10h10"/></svg></button>
+        </div>
+      </div>
+    </div>
+    <div class="sheet-sec">
+      <h5>倒计时销毁</h5>
+      <p>到点后房间和全部聊天记录自动删除，房间里的人会看到倒计时。</p>
+      <div class="timer-now" id="timer-now" hidden><span>剩余 <b id="timer-now-left"></b></span><button type="button" id="timer-cancel">取消倒计时</button></div>
+      <!-- Lucian UX/UI Prompt #017 · MIT License (c) 2026 Seokwoooo · https://lucianlabs.dev/uxui-prompt/#017 -->
+      <div class="ux u017 hours" id="hours" style="--v:.4545">
+        <div class="u017-head"><b>销毁时间</b><span>1～12 小时</span></div>
+        <div class="u017-track">
+          <span class="u017-fill" aria-hidden="true"></span>
+          <span class="u017-bub" aria-hidden="true"><span class="u017-val">6 小时</span></span>
+          <span class="u017-thumb" role="slider" tabindex="0" aria-label="几小时后销毁" aria-valuemin="1" aria-valuemax="12" aria-valuenow="6" aria-valuetext="6 小时"></span>
+        </div>
+        <div class="u017-ticks" aria-hidden="true"></div>
+      </div>
+      <div class="sheet-row"><button class="btn dark" type="button" id="timer-set">6 小时后销毁</button></div>
+    </div>
+    <!-- Lucian UX/UI Prompt #269 · MIT License (c) 2026 Seokwoooo · https://lucianlabs.dev/uxui-prompt/#269 -->
+    <div class="u269-dg"><b>危险操作</b><div><span>立即删除房间和全部聊天记录，在线的人会被请出。</span><button type="button" class="u269-dz" id="destroy-now">立即销毁</button></div></div>
+    <button class="btn ghost" type="button" id="sheet-close">关闭</button>
+  </section>
+</div>
+
+<script src="/static/admin.js"></script>
+</body>
+</html>

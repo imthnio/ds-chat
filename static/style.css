@@ -1,0 +1,593 @@
+/* ds-chat 样式
+   界面元素移植自 Lucian UX/UI Prompt（MIT License (c) 2026 Seokwoooo · https://lucianlabs.dev/uxui-prompt/），
+   每段元素样式前都标了原编号。结构、圆角、动效时长和曲线保持原样，只改了尺寸以适应整页布局。 */
+
+/* Lucian UX/UI Prompt theme tokens · MIT License (c) 2026 Seokwoooo · https://lucianlabs.dev/uxui-prompt/ */
+:root{
+  color-scheme:light;
+  --ux-page:#F4F2EE;
+  --ux-surface:#FFFFFF;
+  --ux-surface-2:#F5F3EF;
+  --ux-surface-3:#EAE7E1;
+  --ux-ink:#16151B;
+  --ux-ink-2:#57535F;
+  --ux-ink-3:#8E8A97;
+  --ux-line:rgba(22,21,27,.09);
+  --ux-line-2:rgba(22,21,27,.17);
+  --ux-accent:#6A57F2;
+  --ux-accent-2:#2F8FE0;
+  --ux-accent-soft:rgba(106,87,242,.12);
+  --ux-accent-ink:#FFFFFF;
+  --ux-mint:#119C72;
+  --ux-warn:#D6731E;
+  --ux-danger:#D93A55;
+  --ux-glass:rgba(255,255,255,.58);
+  --ux-glass-line:rgba(255,255,255,.85);
+  --ux-shadow:rgba(40,30,80,.14);
+  --ux-shadow-strong:rgba(40,30,80,.3);
+  --ux-grad:linear-gradient(120deg,#7B61FF,#3D8BFF 55%,#1FB89A);
+  --ux-ease:cubic-bezier(.2,.8,.2,1);
+  --ux-spring:cubic-bezier(.34,1.45,.64,1);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --ux-page:#07080D;
+    --ux-surface:#13141C;
+    --ux-surface-2:#1A1B25;
+    --ux-surface-3:#252632;
+    --ux-ink:#F4F0E8;
+    --ux-ink-2:rgba(244,240,232,.68);
+    --ux-ink-3:rgba(244,240,232,.42);
+    --ux-line:rgba(255,255,255,.08);
+    --ux-line-2:rgba(255,255,255,.16);
+    --ux-accent:#B7A4FF;
+    --ux-accent-2:#7DB4FF;
+    --ux-accent-soft:rgba(183,164,255,.15);
+    --ux-accent-ink:#0B0C12;
+    --ux-mint:#7EE8C0;
+    --ux-warn:#FFB26B;
+    --ux-danger:#FF7D8C;
+    --ux-glass:rgba(255,255,255,.07);
+    --ux-glass-line:rgba(255,255,255,.18);
+    --ux-shadow:rgba(0,0,0,.45);
+    --ux-shadow-strong:rgba(0,0,0,.72);
+    --ux-grad:linear-gradient(120deg,#B7A4FF,#7DB4FF 55%,#A5F2D3);
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --ux-page:#07080D;
+  --ux-surface:#13141C;
+  --ux-surface-2:#1A1B25;
+  --ux-surface-3:#252632;
+  --ux-ink:#F4F0E8;
+  --ux-ink-2:rgba(244,240,232,.68);
+  --ux-ink-3:rgba(244,240,232,.42);
+  --ux-line:rgba(255,255,255,.08);
+  --ux-line-2:rgba(255,255,255,.16);
+  --ux-accent:#B7A4FF;
+  --ux-accent-2:#7DB4FF;
+  --ux-accent-soft:rgba(183,164,255,.15);
+  --ux-accent-ink:#0B0C12;
+  --ux-mint:#7EE8C0;
+  --ux-warn:#FFB26B;
+  --ux-danger:#FF7D8C;
+  --ux-glass:rgba(255,255,255,.07);
+  --ux-glass-line:rgba(255,255,255,.18);
+  --ux-shadow:rgba(0,0,0,.45);
+  --ux-shadow-strong:rgba(0,0,0,.72);
+  --ux-grad:linear-gradient(120deg,#B7A4FF,#7DB4FF 55%,#A5F2D3);
+}
+
+.ux,.ux *,.ux *::before,.ux *::after{box-sizing:border-box}
+.ux{
+  font-family:"Pretendard Variable",Pretendard,-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Apple SD Gothic Neo","Segoe UI",Roboto,"Noto Sans SC","Noto Sans KR",sans-serif;
+  color:var(--ux-ink);-webkit-font-smoothing:antialiased;letter-spacing:-.01em;
+  -webkit-tap-highlight-color:transparent;
+  word-break:keep-all;overflow-wrap:break-word;
+}
+
+:where(.ux) :is(button,input,textarea,select){font:inherit;color:inherit}
+:where(.ux) button{cursor:pointer}
+.ux :focus-visible{outline:2px solid var(--ux-accent);outline-offset:3px}
+.ux [hidden]{display:none!important}
+
+@media (prefers-reduced-motion:reduce){
+  .ux,.ux *,.ux *::before,.ux *::after{
+    animation-duration:.001ms!important;animation-iteration-count:1!important;
+    transition-duration:.001ms!important;scroll-behavior:auto!important;
+  }
+}
+
+
+/* ---------- 项目主题：白底、蓝白对比 ----------
+   按移植说明把 --ux-* 映射到本项目的配色：页面接近纯白，强调色统一为蓝色。 */
+:root{
+  --ux-page:#F6F8FB;--ux-surface:#FFFFFF;--ux-surface-2:#F1F4F9;--ux-surface-3:#E4E9F1;
+  --ux-ink:#0F1A2A;--ux-ink-2:#4A5568;--ux-ink-3:#8A94A6;
+  --ux-line:rgba(15,26,42,.08);--ux-line-2:rgba(15,26,42,.16);
+  --ux-accent:#1E6FFF;--ux-accent-2:#4C8DFF;--ux-accent-soft:rgba(30,111,255,.10);--ux-accent-ink:#FFFFFF;
+  --ux-mint:#12A26B;
+  --ux-shadow:rgba(20,50,110,.10);--ux-shadow-strong:rgba(20,50,110,.22);
+  --ux-grad:linear-gradient(135deg,#5B9BFF,#1E6FFF);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --ux-page:#0A0F18;--ux-surface:#121A28;--ux-surface-2:#1B2434;--ux-surface-3:#263045;
+    --ux-ink:#E8EEF8;--ux-ink-2:rgba(232,238,248,.7);--ux-ink-3:rgba(232,238,248,.45);
+    --ux-accent:#5B9BFF;--ux-accent-2:#8DB6FF;--ux-accent-soft:rgba(91,155,255,.16);--ux-accent-ink:#FFFFFF;
+    --ux-grad:linear-gradient(135deg,#8DB6FF,#2F7BFF);
+  }
+}
+:root[data-theme="dark"]{
+  --ux-page:#0A0F18;--ux-surface:#121A28;--ux-surface-2:#1B2434;--ux-surface-3:#263045;
+  --ux-ink:#E8EEF8;--ux-ink-2:rgba(232,238,248,.7);--ux-ink-3:rgba(232,238,248,.45);
+  --ux-accent:#5B9BFF;--ux-accent-2:#8DB6FF;--ux-accent-soft:rgba(91,155,255,.16);--ux-accent-ink:#FFFFFF;
+  --ux-grad:linear-gradient(135deg,#8DB6FF,#2F7BFF);
+}
+
+/* ---------- 页面 ---------- */
+*,*::before,*::after{box-sizing:border-box}
+html,body{margin:0;min-height:100%;background:var(--ux-page);color:var(--ux-ink)}
+body{min-height:100dvh;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}
+.view{min-height:100dvh;display:grid;place-items:center;padding:56px 16px 32px}
+.view[hidden]{display:none}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+.corner{position:fixed;top:12px;right:12px;z-index:60;display:flex;gap:6px}
+.corner a,.corner button{height:36px;min-width:36px;padding:0 12px;border:0;border-radius:999px;display:inline-flex;align-items:center;justify-content:center;gap:6px;background:var(--ux-surface);box-shadow:0 0 0 1px var(--ux-line);color:var(--ux-ink-2);font-size:12.5px;font-weight:720;text-decoration:none;cursor:pointer;transition:color .2s,box-shadow .3s}
+.corner a:hover,.corner button:hover{color:var(--ux-ink);box-shadow:0 0 0 1px var(--ux-line-2),0 8px 16px -10px var(--ux-shadow-strong)}
+.corner svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.corner button:focus-visible,.corner a:focus-visible{outline:2px solid var(--ux-accent);outline-offset:2px}
+body.in-chat .corner{display:none}
+
+.foot{margin:18px 0 0;max-width:340px;font-size:12px;line-height:1.6;color:var(--ux-ink-3);text-align:center}
+.foot a{color:inherit}
+
+/* Lucian UX/UI Prompt #062 · MIT License (c) 2026 Seokwoooo · https://lucianlabs.dev/uxui-prompt/#062 */
+/* 改动：卡片高度随内容变化（原 480px 固定），只保留登录面板；里面放 #036 的密钥输入框。 */
+.u062{position:relative;width:340px;height:480px;border-radius:30px;background:var(--ux-surface);box-shadow:0 0 0 1px var(--ux-line),0 30px 60px -36px var(--ux-shadow-strong);overflow:hidden}
+.u062.shake{animation:u062-no .5s cubic-bezier(.36,.07,.19,.97)}
+@keyframes u062-no{15%{transform:translateX(-9px) rotate(-.6deg)}30%{transform:translateX(8px) rotate(.5deg)}45%{transform:translateX(-6px)}60%{transform:translateX(4px)}75%{transform:translateX(-2px)}}
+.u062-pane{position:absolute;inset:0;padding:30px 26px 26px;display:flex;flex-direction:column;transition:transform .6s var(--ux-ease),opacity .4s}
+.u062-logo{width:44px;height:44px;border-radius:14px;background:var(--ux-grad);box-shadow:0 10px 20px -10px rgba(91,72,255,.6)}
+.u062-pane h3{margin:18px 0 4px;font-size:24px;font-weight:850;letter-spacing:-.045em}
+.u062-pane>p{margin:0 0 22px;font-size:13.5px;color:var(--ux-ink-3)}
+.u062-f{position:relative;margin-bottom:12px}
+.u062-f label{display:block;margin-bottom:6px;font-size:12.5px;font-weight:700;color:var(--ux-ink-2)}
+.u062-box{position:relative;display:flex;align-items:center;height:52px;border-radius:15px;background:var(--ux-surface-2);box-shadow:inset 0 0 0 1.5px transparent;transition:box-shadow .25s,background-color .25s}
+.u062-box:focus-within{background:var(--ux-surface);box-shadow:inset 0 0 0 1.5px var(--ux-accent),0 0 0 4px var(--ux-accent-soft)}
+.u062-f.bad .u062-box{box-shadow:inset 0 0 0 1.5px var(--ux-danger);background:color-mix(in srgb,var(--ux-danger) 6%,var(--ux-surface))}
+.u062-box input{flex:1;min-width:0;height:100%;border:0;padding:0 16px;background:none;font-size:15px;font-weight:600;color:var(--ux-ink);outline:none}
+.u062-box input:focus-visible{outline:none}
+.u062-box input::placeholder{color:var(--ux-ink-3);font-weight:500}
+.u062-eye{width:44px;height:44px;margin-right:4px;border:0;padding:0;border-radius:12px;display:grid;place-items:center;background:none;color:var(--ux-ink-3);transition:color .2s}
+.u062-eye:hover{color:var(--ux-ink)}
+.u062-eye:focus-visible{outline:2px solid var(--ux-accent);outline-offset:-4px}
+.u062-eye svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+.u062-lid{transform-origin:12px 12px;transition:transform .35s var(--ux-spring)}
+.u062-eye[aria-pressed="false"] .u062-lid{transform:scaleY(.5)}
+.u062-slash{stroke-dasharray:24;stroke-dashoffset:0;transition:stroke-dashoffset .35s var(--ux-ease)}
+.u062-eye[aria-pressed="true"] .u062-slash{stroke-dashoffset:24}
+.u062-caps{position:absolute;right:0;top:0;font-size:11.5px;font-weight:800;color:var(--ux-warn);opacity:0;transition:opacity .2s}
+.u062-caps.on{opacity:1}
+.u062-err{display:grid;grid-template-rows:0fr;transition:grid-template-rows .35s var(--ux-ease)}
+.u062-err>span{overflow:hidden;min-height:0;font-size:12.5px;font-weight:650;color:var(--ux-danger)}
+.u062-err>span::before{content:"";display:block;height:7px}
+.u062-f.bad .u062-err{grid-template-rows:1fr}
+.u062-go{position:relative;align-self:center;width:100%;height:54px;margin-top:auto;border:0;border-radius:17px;background:var(--ux-ink);color:var(--ux-page);font-size:15.5px;font-weight:760;overflow:hidden;transition:width .45s var(--ux-spring),border-radius .45s var(--ux-spring),background-color .4s,transform .3s var(--ux-spring)}
+.u062-go:active{transform:scale(.97)}
+.u062-go:focus-visible{outline:2px solid var(--ux-accent);outline-offset:3px}
+.u062-go span{transition:opacity .2s}
+.u062-go i{position:absolute;left:50%;top:50%;width:22px;height:22px;margin:-11px 0 0 -11px;border-radius:50%;border:2.5px solid currentColor;border-right-color:transparent;opacity:0;animation:u062-spin .7s linear infinite}
+.u062-go svg{position:absolute;left:50%;top:50%;width:26px;height:26px;margin:-13px 0 0 -13px;fill:none;stroke:currentColor;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}
+.u062-go svg path{stroke-dasharray:26;stroke-dashoffset:26;transition:stroke-dashoffset .4s var(--ux-ease) .1s}
+.u062-go.busy,.u062-go.ok{width:54px;border-radius:27px}
+.u062-go.busy span,.u062-go.ok span{opacity:0}
+.u062-go.busy i{opacity:1}
+.u062-go.ok{background:var(--ux-mint);color:var(--ux-accent-ink)}
+.u062-go.ok svg path{stroke-dashoffset:0}
+@keyframes u062-spin{to{transform:rotate(360deg)}}
+
+.u062.join{height:auto;width:min(380px,100%)}
+.u062.join .u062-pane{position:relative;inset:auto}
+.u062.join .u062-go{margin-top:18px}
+.u062.join .u062-f{margin-bottom:0}
+.key-tools{display:flex;gap:6px;margin:14px 0 0}
+.key-tools button{height:34px;padding:0 12px;border:0;border-radius:999px;display:inline-flex;align-items:center;gap:6px;background:var(--ux-surface-2);color:var(--ux-ink-2);font-size:12.5px;font-weight:720;transition:background-color .2s,color .2s,transform .3s var(--ux-spring)}
+.key-tools button:hover{color:var(--ux-ink);background:var(--ux-surface-3)}
+.key-tools button:active{transform:scale(.94)}
+.key-tools svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+.key-tools .done{color:var(--ux-mint)}
+
+/* Lucian UX/UI Prompt #036 · MIT License (c) 2026 Seokwoooo · https://lucianlabs.dev/uxui-prompt/#036 */
+/* 改动：宽高随卡片（原 340×262 固定），规则换成密钥要求，输入框字号略小以放下长密钥。 */
+.u036{--lv:var(--ux-line-2);position:relative;width:340px;height:262px;display:flex;flex-direction:column;justify-content:center}
+.u036-lab{display:block;margin:0 4px 8px;font-size:13px;font-weight:700;color:var(--ux-ink-3)}
+.u036-box{position:relative;display:flex;align-items:center;height:60px;padding:0 8px 0 18px;border-radius:18px;background:var(--ux-surface);box-shadow:0 0 0 1.5px var(--ux-line-2);transition:box-shadow .25s}
+.u036-box:focus-within{box-shadow:0 0 0 2px var(--lv),0 0 0 6px color-mix(in srgb,var(--lv) 18%,transparent)}
+.u036-in{flex:1;min-width:0;height:100%;border:0;outline:0;background:none;font-size:18px;font-weight:650;letter-spacing:.04em;color:var(--ux-ink)}
+.u036-in:focus-visible{outline:none}
+.u036-eye{width:44px;height:44px;flex:none;border:0;padding:0;border-radius:13px;background:none;color:var(--ux-ink-2);display:grid;place-items:center;transition:background-color .2s}
+.u036-eye:hover{background:var(--ux-surface-2)}
+.u036-eye:focus-visible{outline:2px solid var(--ux-accent);outline-offset:1px}
+.u036-eye svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round;overflow:visible}
+.u036-lid{transform-origin:12px 12px;transition:transform .4s var(--ux-spring)}
+.u036-pupil{transform-origin:12px 12px;transition:transform .35s var(--ux-spring) .05s}
+.u036-slash{stroke-dasharray:24;stroke-dashoffset:0;transition:stroke-dashoffset .35s var(--ux-ease)}
+.u036.is-show .u036-slash{stroke-dashoffset:24}
+.u036:not(.is-show) .u036-pupil{transform:scale(0)}
+.u036:not(.is-show) .u036-lid{transform:scaleY(.15)}
+.u036-meter{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:16px 4px 0}
+.u036-meter i{height:7px;border-radius:4px;background:var(--ux-surface-3);overflow:hidden;position:relative}
+.u036-meter i::after{content:"";position:absolute;inset:0;background:var(--lv);transform:scaleX(0);transform-origin:0 50%;transition:transform .45s var(--ux-ease),background-color .4s}
+.u036-meter i.on::after{transform:none}
+.u036-meter i:nth-child(2)::after{transition-delay:.05s}
+.u036-meter i:nth-child(3)::after{transition-delay:.1s}
+.u036-meter i:nth-child(4)::after{transition-delay:.15s}
+.u036-lv{display:flex;justify-content:space-between;margin:9px 4px 0;font-size:13px;font-weight:650;color:var(--ux-ink-3)}
+.u036-lv b{color:var(--lv);transition:color .4s}
+.u036-rules{margin:18px 0 0;padding:16px;list-style:none;border-radius:18px;background:var(--ux-surface-2);display:grid;grid-template-columns:1fr 1fr;gap:12px 10px}
+.u036-r{display:flex;align-items:center;gap:9px;font-size:13.5px;font-weight:600;color:var(--ux-ink-3);transition:color .3s}
+.u036-r i{position:relative;width:20px;height:20px;flex:none;border-radius:50%;box-shadow:inset 0 0 0 1.8px var(--ux-line-2);transition:box-shadow .3s,background-color .3s}
+.u036-r svg{position:absolute;inset:0;width:100%;height:100%;fill:none;stroke:var(--ux-accent-ink);stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round}
+.u036-r path{stroke-dasharray:14;stroke-dashoffset:14;transition:stroke-dashoffset .3s var(--ux-ease) .1s}
+.u036-r.ok{color:var(--ux-ink)}
+.u036-r.ok i{background:var(--ux-mint);box-shadow:none;animation:u036-pop .4s var(--ux-spring)}
+.u036-r.ok path{stroke-dashoffset:0}
+@keyframes u036-pop{from{transform:scale(.4)}}
+
+.u036.key{width:auto;height:auto}
+.u036.key .u036-in{font-size:16px;letter-spacing:.02em}
+.u036.key.bad .u036-box{box-shadow:0 0 0 2px var(--ux-danger)}
+
+/* Lucian UX/UI Prompt #078 · MIT License (c) 2026 Seokwoooo · https://lucianlabs.dev/uxui-prompt/#078 */
+/* 改动：整页高度、可滚动的完整聊天记录（原 340×500 只留 7 条），去掉语音按钮只留发送，
+   气泡里加了时间，顶部加了设置按钮和销毁倒计时条。 */
+.u078{position:relative;width:340px;height:500px;display:flex;flex-direction:column;border-radius:32px;background:var(--ux-surface);box-shadow:0 0 0 1px var(--ux-line),0 30px 60px -36px var(--ux-shadow-strong);overflow:hidden}
+.u078-top{display:flex;align-items:center;gap:10px;height:62px;padding:0 16px;border-bottom:1px solid var(--ux-line)}
+.u078-top i{width:36px;height:36px;border-radius:50%;background:linear-gradient(140deg,#22C3A6,#0EA5E9)}
+.u078-top b{display:block;font-size:15px;font-weight:800}
+.u078-top small{display:block;font-size:11.5px;font-weight:650;color:var(--ux-mint)}
+.u078-log{flex:1;display:flex;flex-direction:column;justify-content:flex-end;gap:6px;padding:12px 14px;overflow:hidden;-webkit-mask-image:linear-gradient(180deg,transparent,#000 22px);mask-image:linear-gradient(180deg,transparent,#000 22px)}
+.u078-m{position:relative;display:flex;align-items:center;max-width:82%;touch-action:pan-y}
+.u078-m.me{align-self:flex-end;flex-direction:row-reverse}
+.u078-bub{position:relative;z-index:1;padding:9px 13px;border-radius:18px 18px 18px 6px;background:var(--ux-surface-2);font-size:14px;line-height:1.45;transform:translateX(var(--dx,0px));transition:transform .4s var(--ux-spring);user-select:none;-webkit-user-select:none}
+.u078-m.drag .u078-bub{transition:none}
+.u078-m.me .u078-bub{border-radius:18px 18px 6px 18px;background:var(--ux-accent);color:var(--ux-accent-ink)}
+.u078-q{display:block;margin:-2px -4px 6px;padding:6px 8px;border-radius:10px;background:color-mix(in srgb,currentColor 12%,transparent);font-size:12px;line-height:1.35;opacity:.85;border-left:3px solid currentColor}
+.u078-rep{position:absolute;left:6px;top:50%;width:26px;height:26px;margin-top:-13px;border-radius:50%;display:grid;place-items:center;background:var(--ux-surface-2);color:var(--ux-ink-2);opacity:var(--ro,0);transform:scale(calc(.5 + var(--ro,0) * .5))}
+.u078-rep svg,.u078-rb svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+.u078-rep.full{background:var(--ux-accent);color:var(--ux-accent-ink)}
+.u078-rb{width:28px;height:28px;flex:none;margin:0 4px;border:0;padding:0;border-radius:50%;display:grid;place-items:center;background:none;color:var(--ux-ink-3);opacity:0;transition:opacity .2s,background-color .2s}
+.u078-m:hover .u078-rb,.u078-rb:focus-visible{opacity:1}
+.u078-rb:hover{background:var(--ux-surface-2);color:var(--ux-ink)}
+.u078-rb:focus-visible{outline:2px solid var(--ux-accent);outline-offset:1px}
+@media (hover:none){.u078-rb{display:none}}
+.u078-m.in{animation:u078-in .5s var(--ux-spring)}
+@keyframes u078-in{from{opacity:0;transform:translateY(16px) scale(.9)}}
+.u078-m.me.in{transform-origin:100% 100%;animation:u078-up .55s var(--ux-spring)}
+@keyframes u078-up{from{opacity:0;transform:translateY(46px) scale(.6)}}
+.u078-ty{display:flex;gap:4px;align-self:flex-start;padding:12px 14px;border-radius:18px 18px 18px 6px;background:var(--ux-surface-2)}
+.u078-ty i{width:7px;height:7px;border-radius:50%;background:var(--ux-ink-3);animation:u078-dot 1.2s ease-in-out infinite}
+.u078-ty i:nth-child(2){animation-delay:.15s}.u078-ty i:nth-child(3){animation-delay:.3s}
+@keyframes u078-dot{0%,60%,100%{transform:none;opacity:.5}30%{transform:translateY(-4px);opacity:1}}
+.u078-reply{display:grid;grid-template-rows:0fr;transition:grid-template-rows .35s var(--ux-ease)}
+.u078-reply.on{grid-template-rows:1fr}
+.u078-reply>div{min-height:0;overflow:hidden}
+.u078-rbox{display:flex;align-items:center;gap:10px;margin:0 12px;padding:8px 6px 8px 12px;border-radius:14px 14px 0 0;background:var(--ux-surface-2);border-left:3px solid var(--ux-accent)}
+.u078-rbox span{flex:1;min-width:0;font-size:12.5px;line-height:1.35;color:var(--ux-ink-2)}
+.u078-rbox span b{display:block;font-size:11.5px;color:var(--ux-accent)}
+.u078-rbox span em{display:block;font-style:normal;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.u078-rx{width:26px;height:26px;border:0;padding:0;border-radius:50%;display:grid;place-items:center;background:none;color:var(--ux-ink-3)}
+.u078-rx svg{width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:2.4;stroke-linecap:round}
+.u078-rx:focus-visible{outline:2px solid var(--ux-accent)}
+.u078-bar{display:flex;align-items:center;gap:8px;padding:0 12px 14px}
+.u078-in{flex:1;min-width:0;height:46px;padding:0 16px;border:0;border-radius:23px;background:var(--ux-surface-2);font-size:14.5px;color:var(--ux-ink);outline:none;box-shadow:inset 0 0 0 1.5px transparent;transition:box-shadow .2s}
+.u078-in:focus-visible{outline:none;box-shadow:inset 0 0 0 1.5px var(--ux-accent)}
+.u078-send{position:relative;width:46px;height:46px;flex:none;border:0;padding:0;border-radius:50%;background:var(--ux-surface-2);color:var(--ux-ink-2);transition:background-color .3s,color .3s,transform .3s var(--ux-spring)}
+.u078-send.go{background:var(--ux-accent);color:var(--ux-accent-ink)}
+.u078-send:active{transform:scale(.88)}
+.u078-send:focus-visible{outline:2px solid var(--ux-accent);outline-offset:2px}
+.u078-send svg{position:absolute;left:50%;top:50%;width:20px;height:20px;margin:-10px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;transition:transform .35s var(--ux-spring),opacity .2s}
+
+.view.chat-view{padding:24px 16px}
+.u078.chat{width:min(520px,100%);height:min(820px,calc(100dvh - 48px))}
+.u078.chat .u078-top{flex:none;padding:0 8px 0 16px}
+.u078.chat .u078-top>span{flex:1;min-width:0}
+.u078.chat .u078-top small.off{color:var(--ux-ink-3)}
+.u078.chat .u078-top small.wait{color:var(--ux-warn)}
+.u078.chat .u078-top b em{font-style:normal;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.06em}
+.u078.chat .u078-log{overflow-y:auto;justify-content:flex-start;overscroll-behavior:contain;padding-top:20px}
+.u078.chat .u078-log>:first-child{margin-top:auto}
+.u078.chat .u078-bub{white-space:pre-wrap;user-select:text;-webkit-user-select:text}
+.u078.chat .u078-m{flex:none}
+.u078.chat .u078-bar{flex:none;padding-bottom:max(14px,env(safe-area-inset-bottom))}
+.u078.chat .u078-send svg{transform:translateX(-1px)}
+.u078-t{display:block;margin-top:3px;font-size:10.5px;font-weight:600;opacity:.55;text-align:right;font-variant-numeric:tabular-nums}
+.u078-day{align-self:center;flex:none;margin:8px 0 2px;padding:3px 10px;border-radius:999px;background:var(--ux-surface-2);font-size:11px;font-weight:700;color:var(--ux-ink-3)}
+.u078-note{align-self:center;flex:none;max-width:88%;margin:6px 0;padding:8px 12px;border-radius:12px;font-size:12px;line-height:1.5;font-weight:600;color:var(--ux-ink-3);text-align:center}
+.u078-m.fail .u078-bub{opacity:.55}
+.top-btn{width:40px;height:40px;flex:none;border:0;padding:0;border-radius:12px;display:grid;place-items:center;background:none;color:var(--ux-ink-2);transition:background-color .2s,color .2s}
+.top-btn:hover{background:var(--ux-surface-2);color:var(--ux-ink)}
+.top-btn svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.top-btn:focus-visible{outline:2px solid var(--ux-accent);outline-offset:-2px}
+
+.timer-strip{flex:none;display:grid;grid-template-rows:0fr;transition:grid-template-rows .35s var(--ux-ease)}
+.timer-strip.on{grid-template-rows:1fr}
+.timer-strip>div{min-height:0;overflow:hidden}
+.timer-strip p{display:flex;align-items:center;gap:8px;margin:0;padding:9px 16px;background:color-mix(in srgb,var(--ux-warn) 12%,var(--ux-surface));color:var(--ux-warn);font-size:12.5px;font-weight:720}
+.timer-strip p b{font-variant-numeric:tabular-nums;font-weight:850}
+.timer-strip svg{width:15px;height:15px;flex:none;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+
+@media (max-width:560px){
+  .view.chat-view{padding:0}
+  .u078.chat{width:100%;height:100dvh;border-radius:0;box-shadow:none}
+}
+
+/* ---------- 房间设置面板（销毁倒计时 / 立即销毁 / 退出） ---------- */
+.sheet-dim{position:absolute;inset:0;z-index:20;background:rgba(10,10,20,.42);opacity:0;pointer-events:none;transition:opacity .3s}
+.sheet{position:absolute;left:0;right:0;bottom:0;z-index:21;max-height:calc(100% - 40px);overflow-y:auto;padding:10px 18px max(18px,env(safe-area-inset-bottom));border-radius:26px 26px 0 0;background:var(--ux-surface);box-shadow:0 -20px 50px -20px var(--ux-shadow-strong);transform:translateY(105%);transition:transform .45s var(--ux-ease);visibility:hidden}
+.chat.sheet-on .sheet-dim{opacity:1;pointer-events:auto}
+.chat.sheet-on .sheet{transform:none;visibility:visible}
+.sheet-grip{display:block;width:40px;height:5px;margin:0 auto 12px;border-radius:3px;background:var(--ux-surface-3)}
+.sheet h4{margin:0;font-size:17px;font-weight:850;letter-spacing:-.03em}
+.sheet-meta{margin:4px 0 0;font-size:12.5px;line-height:1.5;color:var(--ux-ink-3)}
+.sheet-meta b{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--ux-ink-2)}
+.sheet-sec{margin-top:16px;padding:14px;border-radius:18px;background:var(--ux-surface-2)}
+.sheet-sec h5{margin:0;font-size:13px;font-weight:800}
+.sheet-sec p{margin:4px 0 0;font-size:12px;line-height:1.5;color:var(--ux-ink-3)}
+.sheet-row{display:flex;gap:8px;margin-top:6px}
+.btn{height:42px;padding:0 16px;border:0;border-radius:13px;font-size:13.5px;font-weight:800;transition:transform .3s var(--ux-spring),opacity .2s,background-color .2s}
+.btn:active{transform:scale(.96)}
+.btn:disabled{opacity:.35;cursor:not-allowed}
+.btn:focus-visible{outline:2px solid var(--ux-accent);outline-offset:2px}
+.btn.dark{flex:1;background:var(--ux-ink);color:var(--ux-page)}
+.btn.soft{flex:1;background:var(--ux-surface-3);color:var(--ux-ink)}
+.btn.ghost{width:100%;margin-top:14px;background:var(--ux-surface-2);color:var(--ux-ink-2)}
+.timer-now{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:10px;padding:10px 12px;border-radius:12px;background:color-mix(in srgb,var(--ux-warn) 12%,var(--ux-surface));color:var(--ux-warn);font-size:12.5px;font-weight:720}
+.timer-now b{font-variant-numeric:tabular-nums;font-weight:850}
+.timer-now button{height:30px;padding:0 10px;border:0;border-radius:9px;background:var(--ux-surface);color:var(--ux-ink);font-size:12px;font-weight:800}
+
+/* Lucian UX/UI Prompt #017 · MIT License (c) 2026 Seokwoooo · https://lucianlabs.dev/uxui-prompt/#017 */
+/* 改动：宽度随面板（原 330×210 固定），数值改成 1～12 小时。 */
+.u017{position:relative;width:330px;height:210px;display:flex;flex-direction:column;justify-content:center;padding:0 24px}
+.u017-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:58px}
+.u017-head b{font-size:16px;font-weight:720;letter-spacing:-.02em}
+.u017-head span{font-size:13px;color:var(--ux-ink-3)}
+.u017-track{position:relative;height:12px;border-radius:999px;background:var(--ux-surface-3);box-shadow:inset 0 1px 2px rgba(0,0,0,.08);cursor:pointer;touch-action:none}
+.u017-fill{position:absolute;left:0;top:0;bottom:0;width:calc(var(--v) * 100%);border-radius:inherit;background:linear-gradient(90deg,#8B6CFF,#4F8DFF)}
+.u017-fill::after{content:"";position:absolute;inset:0;border-radius:inherit;background:linear-gradient(180deg,rgba(255,255,255,.35),transparent 60%)}
+.u017-thumb{position:absolute;left:calc(var(--v) * 100%);top:50%;width:32px;height:32px;margin:-16px 0 0 -16px;border-radius:50%;background:#fff;cursor:grab;
+  box-shadow:0 0 0 3px #4F8DFF,0 8px 18px -6px rgba(40,60,160,.5);transition:transform .35s var(--ux-spring),box-shadow .3s var(--ux-ease)}
+.u017-thumb:hover{transform:scale(1.08)}
+.u017.is-drag .u017-thumb{cursor:grabbing;transform:scale(1.15);box-shadow:0 0 0 3px #4F8DFF,0 0 0 10px color-mix(in srgb,#4F8DFF 18%,transparent),0 8px 18px -6px rgba(40,60,160,.5)}
+.u017-thumb:focus-visible{outline:none;box-shadow:0 0 0 3px #4F8DFF,0 0 0 8px color-mix(in srgb,var(--ux-accent) 35%,transparent)}
+.u017-bub{position:absolute;left:calc(var(--v) * 100%);bottom:28px;transform-origin:50% 100%;transform:translateX(-50%) rotate(var(--tilt,0deg)) scale(var(--bs,1));transition:transform .55s var(--ux-spring);pointer-events:none}
+.u017.is-drag .u017-bub{--bs:1.1;transition:transform .12s linear}
+.u017-bub span{display:block;padding:9px 14px;border-radius:14px;background:var(--ux-ink);color:var(--ux-page);font-size:16px;font-weight:760;letter-spacing:-.02em;white-space:nowrap;font-variant-numeric:tabular-nums;box-shadow:0 12px 24px -12px var(--ux-shadow-strong)}
+.u017-bub::after{content:"";position:absolute;left:50%;bottom:-5px;width:12px;height:12px;margin-left:-6px;border-radius:2px;background:var(--ux-ink);transform:rotate(45deg)}
+.u017-ticks{display:flex;justify-content:space-between;margin-top:18px;font-size:12px;font-weight:600;color:var(--ux-ink-3);font-variant-numeric:tabular-nums}
+.u017-ticks span{position:relative;transition:color .3s var(--ux-ease)}
+.u017-ticks span.on{color:var(--ux-ink)}
+.u017-ticks span::before{content:"";position:absolute;left:50%;top:-10px;width:2px;height:5px;margin-left:-1px;border-radius:1px;background:currentColor;opacity:.6}
+
+.u017.hours{width:auto;height:auto;padding:0 10px 4px}
+.u017.hours .u017-head{margin:6px 0 52px}
+.u017.hours .u017-head b{font-size:13px;font-weight:800}
+.u017.hours .u017-head span{font-size:12px}
+
+/* Lucian UX/UI Prompt #269 · MIT License (c) 2026 Seokwoooo · https://lucianlabs.dev/uxui-prompt/#269 */
+/* 改动：危险区放在设置面板里；确认框铺满聊天卡片，输入房间码才能销毁（原为项目名）；
+   销毁不可撤回，所以没有用原来的碎裂动画和“撤销”提示。 */
+.u269{position:relative;width:340px;height:340px;border-radius:30px;overflow:hidden;background:var(--ux-surface);box-shadow:0 0 0 1px var(--ux-line),0 30px 60px -36px var(--ux-shadow-strong);color:var(--ux-ink)}
+.u269-dg{margin-top:16px;padding:13px;border-radius:16px;box-shadow:inset 0 0 0 1px color-mix(in srgb,#E11D48 35%,transparent)}
+.u269-dg b{display:block;font-size:12px;font-weight:850;color:#BE123C}
+.u269-dg div{display:flex;align-items:center;gap:10px;margin-top:6px}
+.u269-dg span{flex:1;font-size:10.5px;line-height:1.4;font-weight:650;color:var(--ux-ink-2)}
+.u269-dz{height:32px;padding:0 13px;border:0;border-radius:9px;background:#E11D48;color:#fff;font:inherit;font-size:11.5px;font-weight:850;cursor:pointer}
+.u269-dim{position:absolute;inset:0;background:rgba(10,10,20,.42);opacity:0;pointer-events:none;transition:opacity .3s}
+.u269.is-m .u269-dim{opacity:1;pointer-events:auto}
+.u269-md{position:absolute;left:16px;right:16px;top:50%;margin-top:-118px;padding:18px;border-radius:20px;background:var(--ux-surface);box-shadow:0 30px 60px -20px rgba(0,0,0,.45);transform:translateY(16px) scale(.96);opacity:0;pointer-events:none;transition:transform .35s cubic-bezier(.3,1.3,.5,1),opacity .2s}
+.u269.is-m .u269-md{transform:none;opacity:1;pointer-events:auto}
+.u269-md h4{display:flex;align-items:center;gap:8px;margin:0;font-size:15px;font-weight:900}
+.u269-md h4 i{width:24px;height:24px;border-radius:8px;background:color-mix(in srgb,#E11D48 15%,transparent);color:#E11D48;display:grid;place-items:center;font-style:normal;font-size:13px;font-weight:900}
+.u269-md p{margin:8px 0 0;font-size:11px;line-height:1.5;font-weight:650;color:var(--ux-ink-2)}
+.u269-nm{display:inline-flex;margin-top:12px;padding:5px 9px;border-radius:8px;background:var(--ux-surface-2);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;font-weight:800;color:var(--ux-ink-3)}
+.u269-nm span{transition:color .15s}
+.u269-nm span.is-ok{color:#E11D48}
+.u269-in{display:block;width:100%;height:42px;margin-top:8px;padding:0 12px;border:0;border-radius:11px;background:var(--ux-surface-2);box-shadow:inset 0 0 0 1.5px var(--ux-line);color:var(--ux-ink);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;font-weight:700;outline:none;box-sizing:border-box}
+.u269-in:focus{box-shadow:inset 0 0 0 2px #E11D48}
+.u269-in.is-shake{animation:u269-sh .35s}
+@keyframes u269-sh{25%,75%{transform:translateX(-4px)}50%{transform:translateX(4px)}}
+.u269-bs{display:flex;gap:6px;margin-top:14px}
+.u269-bs button{flex:1;height:40px;border:0;border-radius:11px;font:inherit;font-size:12px;font-weight:850;cursor:pointer}
+.u269-cx{background:var(--ux-surface-2);color:var(--ux-ink-2)}
+.u269-go{background:#E11D48;color:#fff;transition:opacity .2s}
+.u269-go:disabled{opacity:.3;cursor:not-allowed}
+.u269 button:focus-visible,.u269-dz:focus-visible{outline:2px solid var(--ux-accent);outline-offset:2px}
+@media (prefers-reduced-motion: reduce){.u269-md,.u269-dim{transition:none}.u269-in.is-shake{animation:none}}
+:root[data-theme="dark"] .u269-dg b{color:#FB7185}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .u269-dg b{color:#FB7185}}
+
+.u269.confirm{position:absolute;inset:0;z-index:30;width:auto;height:auto;border-radius:inherit;background:none;box-shadow:none;pointer-events:none}
+.u269.confirm.is-m{pointer-events:auto}
+.u269.confirm .u269-md{left:50%;right:auto;width:min(340px,calc(100% - 32px));margin-left:calc(min(340px,calc(100% - 32px)) / -2)}
+.u269.confirm .u269-md p{font-size:12px}
+.u269-dg span{font-size:11.5px}
+.u269-dz:disabled{opacity:.35;cursor:not-allowed}
+
+/* Lucian UX/UI Prompt #070 · MIT License (c) 2026 Seokwoooo · https://lucianlabs.dev/uxui-prompt/#070 */
+/* 改动：固定在页面底部中间，只有提示条本身接收鼠标；没有示例按钮。 */
+.u070{position:relative;width:350px;height:370px}
+.u070-zone{position:absolute;left:0;right:0;bottom:0;height:300px;outline:none}
+.u070-t{position:absolute;left:0;right:0;bottom:0;display:flex;align-items:center;gap:12px;min-height:68px;padding:12px 12px 12px 14px;border-radius:20px;background:var(--ux-surface);box-shadow:0 0 0 1px var(--ux-line),0 16px 30px -18px var(--ux-shadow-strong);transform-origin:50% 100%;transform:translate(var(--dx,0px),var(--y,0px)) scale(var(--s,1));opacity:var(--o,1);transition:transform .5s var(--ux-spring),opacity .35s;touch-action:pan-y;user-select:none;-webkit-user-select:none}
+.u070-t.drag{transition:none}
+.u070-t.enter{transform:translateY(90px) scale(.9);opacity:0}
+.u070-t.leave{transform:translate(var(--dx,0px),var(--y,0px)) scale(var(--s,1));opacity:0;pointer-events:none}
+.u070-t.leave.side{transform:translate(calc(var(--dir,1) * 420px),var(--y,0px)) rotate(calc(var(--dir,1) * 8deg))}
+.u070-t>*{transition:opacity .25s}
+.u070-t.back>*{opacity:0}
+.u070-ic{width:36px;height:36px;flex:none;border-radius:12px;display:grid;place-items:center;background:color-mix(in srgb,var(--c) 15%,transparent);color:var(--c)}
+.u070-ic svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round}
+.u070-tx{flex:1;min-width:0}
+.u070-tx b{display:block;font-size:14px;font-weight:780;letter-spacing:-.02em}
+.u070-tx small{display:block;margin-top:2px;font-size:12.5px;font-weight:600;color:var(--ux-ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.u070-x{width:30px;height:30px;flex:none;border:0;padding:0;border-radius:50%;display:grid;place-items:center;background:none;color:var(--ux-ink-3)}
+.u070-x:hover{background:var(--ux-surface-2);color:var(--ux-ink)}
+.u070-x svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2.4;stroke-linecap:round}
+.u070-x:focus-visible{outline:2px solid var(--ux-accent);outline-offset:1px}
+.u070-bar{position:absolute;left:16px;right:16px;bottom:0;height:2px;border-radius:2px;background:var(--c);opacity:.5;transform-origin:0 50%;transform:scaleX(var(--left,1))}
+.u070-live{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+
+.u070.toasts{position:fixed;left:50%;bottom:max(16px,env(safe-area-inset-bottom));z-index:80;width:min(350px,calc(100% - 32px));height:0;transform:translateX(-50%);pointer-events:none}
+body.in-chat .u070.toasts{bottom:96px}
+.u070.toasts .u070-t{pointer-events:auto}
+
+/* ---------- 管理后台 ---------- */
+.admin-wrap{width:min(960px,100%);align-self:start}
+.admin-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:8px 0 18px}
+.admin-head .u062-logo{flex:none}
+.admin-head h1{flex:1;margin:0;font-size:24px;font-weight:850;letter-spacing:-.045em}
+.admin-head p{width:100%;margin:0;font-size:13px;color:var(--ux-ink-3)}
+.admin-stats{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.admin-stats span{padding:7px 12px;border-radius:999px;background:var(--ux-surface);box-shadow:0 0 0 1px var(--ux-line);font-size:12.5px;font-weight:700;color:var(--ux-ink-2)}
+.admin-stats b{color:var(--ux-ink);font-variant-numeric:tabular-nums}
+.rooms{border-radius:24px;background:var(--ux-surface);box-shadow:0 0 0 1px var(--ux-line),0 30px 60px -36px var(--ux-shadow-strong);overflow:hidden}
+.room{display:grid;grid-template-columns:110px 1fr auto;align-items:center;gap:14px;padding:14px 16px;border-top:1px solid var(--ux-line)}
+.room:first-child{border-top:0}
+.room code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:14px;font-weight:800;letter-spacing:.06em}
+.room-info{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12.5px;color:var(--ux-ink-3)}
+.room-info b{font-weight:700;color:var(--ux-ink-2);font-variant-numeric:tabular-nums}
+.room-info .live{color:var(--ux-mint)}
+.room-info .warn{color:var(--ux-warn)}
+.room .btn{height:36px;font-size:12.5px}
+.rooms-empty{padding:40px 16px;text-align:center;font-size:13.5px;color:var(--ux-ink-3)}
+@media (max-width:560px){
+  .room{grid-template-columns:1fr auto}
+  .room-info{grid-column:1 / -1;grid-row:2}
+}
+.admin-sheet{position:fixed;inset:0;z-index:40;display:grid;place-items:end center;pointer-events:none}
+.admin-sheet .sheet-dim{position:fixed}
+.admin-sheet .sheet{position:relative;width:min(460px,100%);border-radius:26px 26px 0 0}
+.admin-sheet.on{pointer-events:auto}
+.admin-sheet.on .sheet-dim{opacity:1;pointer-events:auto}
+.admin-sheet.on .sheet{transform:none;visibility:visible}
+.admin-sheet .u269.confirm{position:fixed}
+@media (min-width:561px){
+  .admin-sheet{place-items:center}
+  .admin-sheet .sheet{border-radius:26px;transform:translateY(24px) scale(.97);opacity:0;transition:transform .4s var(--ux-ease),opacity .25s}
+  .admin-sheet.on .sheet{opacity:1}
+}
+.u017.hours .u017-ticks{position:relative;display:block;height:16px}
+.u017.hours .u017-ticks span{position:absolute;top:0;left:calc(var(--p) * 100%);transform:translateX(-50%)}
+body>.u269.confirm{position:fixed;z-index:50}
+
+/* ---------- 聊天窗口：左右气泡（WhatsApp 式布局，白底蓝白配色） ----------
+   在 #078 的结构和动效上换配色和形状：自己的消息靠右蓝底白字，对方靠左浅灰，
+   每组第一条带尾巴，时间和发送勾放在气泡右下角。 */
+.u078.chat{
+  --wa-bg:#FFFFFF;--wa-head:#FFFFFF;--wa-line:#EDF0F5;--wa-ink:#0F1A2A;--wa-meta:#8A94A6;
+  --wa-me:#1E6FFF;--wa-me-ink:#FFFFFF;--wa-me-meta:rgba(255,255,255,.78);
+  --wa-them:#F1F4F9;--wa-blue:#1E6FFF;--wa-chip:#F1F4F9;--wa-note:#EEF4FF;--wa-note-ink:#2F5FB3;
+  --wa-bar:#FFFFFF;--wa-in:#F1F4F9;
+  background:var(--wa-bg)
+}
+:root[data-theme="dark"] .u078.chat{
+  --wa-bg:#0E1420;--wa-head:#121A28;--wa-line:#1C2636;--wa-ink:#E8EEF8;--wa-meta:#7F8BA0;
+  --wa-me:#2F7BFF;--wa-them:#1B2434;--wa-blue:#5B9BFF;--wa-chip:#1B2434;--wa-note:#16233A;--wa-note-ink:#8DB6FF;
+  --wa-bar:#121A28;--wa-in:#1B2434
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]) .u078.chat{
+    --wa-bg:#0E1420;--wa-head:#121A28;--wa-line:#1C2636;--wa-ink:#E8EEF8;--wa-meta:#7F8BA0;
+    --wa-me:#2F7BFF;--wa-them:#1B2434;--wa-blue:#5B9BFF;--wa-chip:#1B2434;--wa-note:#16233A;--wa-note-ink:#8DB6FF;
+    --wa-bar:#121A28;--wa-in:#1B2434
+  }
+}
+.u078.chat .u078-top{height:62px;background:var(--wa-head);border-bottom:1px solid var(--wa-line);color:var(--wa-ink)}
+.u078.chat .u078-top i{width:40px;height:40px;background:linear-gradient(140deg,#5B9BFF,#1E6FFF)}
+.u078.chat .u078-top b{font-size:16px;font-weight:700}
+.u078.chat .u078-top small{font-size:12.5px;font-weight:500;color:var(--wa-meta)}
+.u078.chat .u078-top small.on{color:var(--wa-blue)}
+.u078.chat .top-btn{color:var(--wa-meta)}
+.u078.chat .top-btn:hover{background:var(--wa-chip);color:var(--wa-ink)}
+
+.u078.chat .u078-log{gap:2px;padding:14px 5% 10px;-webkit-mask-image:none;mask-image:none;background:var(--wa-bg)}
+.u078.chat .u078-m{max-width:min(78%,440px)}
+.u078.chat .u078-m.tail{margin-top:10px}
+.u078.chat .u078-bub{padding:7px 10px 8px 11px;border-radius:14px;background:var(--wa-them);color:var(--wa-ink);font-size:14.5px;line-height:1.4}
+.u078.chat .u078-m.me .u078-bub{border-radius:14px;background:var(--wa-me);color:var(--wa-me-ink)}
+.u078.chat .u078-m.tail .u078-bub{border-top-left-radius:3px}
+.u078.chat .u078-m.me.tail .u078-bub{border-top-left-radius:14px;border-top-right-radius:3px}
+.u078.chat .u078-m.tail .u078-bub::before{content:"";position:absolute;top:0;left:-7px;width:8px;height:12px;background:inherit;clip-path:polygon(0 0,100% 0,100% 100%)}
+.u078.chat .u078-m.me.tail .u078-bub::before{left:auto;right:-7px;clip-path:polygon(0 0,100% 0,0 100%)}
+.u078.chat .u078-t{float:right;position:relative;top:7px;display:inline-flex;align-items:center;gap:3px;margin:0 0 0 12px;font-size:11px;font-weight:400;line-height:15px;color:var(--wa-meta);opacity:1}
+.u078.chat .u078-m.me .u078-t{color:var(--wa-me-meta)}
+.u078-ck{width:16px;height:11px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.u078.chat .u078-q{margin:0 0 5px;padding:5px 8px;border-radius:8px;border-left:3px solid var(--wa-blue);background:rgba(30,111,255,.08);color:var(--wa-meta);font-size:13px;opacity:1;overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical}
+.u078.chat .u078-q b{display:block;font-size:12.5px;font-weight:600;color:var(--wa-blue)}
+.u078.chat .u078-m.me .u078-q{border-left-color:#fff;background:rgba(255,255,255,.16);color:rgba(255,255,255,.85)}
+.u078.chat .u078-m.me .u078-q b{color:#fff}
+.u078.chat .u078-rep{background:var(--wa-chip);color:var(--wa-meta)}
+.u078.chat .u078-rep.full{background:var(--wa-blue);color:#fff}
+.u078.chat .u078-rb{color:var(--wa-meta)}
+.u078.chat .u078-rb:hover{background:var(--wa-chip);color:var(--wa-ink)}
+.u078.chat .u078-ty{margin-top:10px;background:var(--wa-them);border-radius:3px 14px 14px 14px}
+.u078.chat .u078-ty i{background:var(--wa-meta)}
+.u078.chat .u078-day{margin:12px 0 4px;padding:4px 12px;border-radius:999px;background:var(--wa-chip);font-size:12px;font-weight:500;color:var(--wa-meta)}
+.u078.chat .u078-note{margin:10px 0 4px;padding:7px 12px;border-radius:10px;background:var(--wa-note);font-size:12.5px;font-weight:500;color:var(--wa-note-ink)}
+
+.u078.chat .u078-reply{background:var(--wa-bar)}
+.u078.chat .u078-rbox{margin:8px 12px 0;border-radius:10px;border-left:3px solid var(--wa-blue);background:var(--wa-in)}
+.u078.chat .u078-rbox span b{color:var(--wa-blue)}
+.u078.chat .u078-bar{gap:8px;padding:8px 12px max(10px,env(safe-area-inset-bottom));background:var(--wa-bar);border-top:1px solid var(--wa-line)}
+.u078.chat .u078-in{height:44px;border-radius:22px;background:var(--wa-in);color:var(--wa-ink);font-size:15px}
+.u078.chat .u078-in::placeholder{color:var(--wa-meta)}
+.u078.chat .u078-in:focus-visible{box-shadow:inset 0 0 0 1.5px var(--wa-blue)}
+.u078.chat .u078-send{width:44px;height:44px;background:var(--wa-blue);color:#fff;opacity:.45}
+.u078.chat .u078-send.go{background:var(--wa-blue);color:#fff;opacity:1}
+.u078.chat .u078-send:focus-visible{outline-color:var(--wa-blue)}
+.timer-strip p{background:var(--ux-accent-soft);color:var(--ux-accent)}
+.timer-now{background:var(--ux-accent-soft);color:var(--ux-accent)}
+
+body.in-chat .u070.toasts{top:170px;bottom:auto}
+.u078.chat{overflow:clip}
+
+/* Lucian UX/UI Prompt #018 · MIT License (c) 2026 Seokwoooo · https://lucianlabs.dev/uxui-prompt/#018 */
+/* 改动：只用加减器本身（去掉商品图和总价），数值是房间人数上限 2～7。 */
+.u018-step{display:flex;align-items:center;height:60px;padding:6px;border-radius:999px;background:var(--ux-surface);box-shadow:0 0 0 1px var(--ux-line),0 16px 30px -22px var(--ux-shadow-strong)}
+.u018-step.is-shake{animation:u018-no .42s var(--ux-ease)}
+@keyframes u018-no{20%{transform:translateX(-6px)}40%{transform:translateX(5px)}60%{transform:translateX(-3px)}80%{transform:translateX(2px)}}
+.u018-b{width:48px;height:48px;border:0;padding:0;border-radius:50%;background:var(--ux-surface-2);color:var(--ux-ink);display:grid;place-items:center;transition:transform .4s var(--ux-spring),background-color .25s var(--ux-ease),opacity .3s var(--ux-ease)}
+.u018-b:hover{background:var(--ux-surface-3)}
+.u018-b:active{transform:scale(.86)}
+.u018-b:focus-visible{outline:2px solid var(--ux-accent);outline-offset:2px}
+.u018-b[aria-disabled="true"]{opacity:.35}
+.u018-b svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2.4;stroke-linecap:round}
+.u018-b.pl{background:var(--ux-ink);color:var(--ux-page)}
+.u018-b.pl:hover{background:var(--ux-ink)}
+.u018-num{display:flex;justify-content:center;width:56px;height:34px;overflow:hidden;font-size:26px;font-weight:780;line-height:34px;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.u018-col{display:flex;flex-direction:column;transition:transform .55s var(--ux-spring),width .4s var(--ux-ease),opacity .3s var(--ux-ease)}
+.u018-col span{height:34px;text-align:center}
+.u018-col.is-hide{width:0!important;opacity:0}
+.u018-sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+
+.u018.limit{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px}
+.u018.limit .u018-step{height:52px;padding:5px}
+.u018.limit .u018-b{width:42px;height:42px}
+.u018.limit p{margin:0;font-size:12px;line-height:1.5;color:var(--ux-ink-3)}
+.u018.limit p b{display:block;font-size:13px;font-weight:800;color:var(--ux-ink)}
+
+/* 项目主题：组件上的蓝色强调（放在最后，盖过元素原样式） */
+.u062-logo{box-shadow:0 10px 20px -10px rgba(30,111,255,.6)}
+.u062-go{background:var(--ux-accent);color:#fff}
+.u062-go.ok{background:var(--ux-mint);color:#fff}
+.btn.dark{background:var(--ux-accent);color:#fff}
+.u018-b.pl,.u018-b.pl:hover{background:var(--ux-accent);color:#fff}
+.u017-bub span,.u017-bub::after{background:var(--ux-accent);color:#fff}
+.u017-fill{background:linear-gradient(90deg,#5B9BFF,#1E6FFF)}
+.corner [hidden]{display:none}
+.admin-sheet{z-index:70}
+body>.u269.confirm{z-index:90}
