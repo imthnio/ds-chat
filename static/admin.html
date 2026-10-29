@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- 界面元素来自 Lucian UX/UI Prompt：#062 #017 #269 #070 · MIT License (c) 2026 Seokwoooo · https://lucianlabs.dev/uxui-prompt/ -->
+<!-- 界面元素来自 Lucian UX/UI Prompt：#062 #017 #018 #269 #070 · MIT License (c) 2026 Seokwoooo · https://lucianlabs.dev/uxui-prompt/ -->
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -25,7 +25,7 @@
     <form class="u062-pane u062-login" id="login-form" novalidate>
       <span class="u062-logo" aria-hidden="true"></span>
       <h3>管理后台</h3>
-      <p>管理员可以查看全部房间，调整人数上限，立即销毁或设销毁倒计时。看不到聊天内容。</p>
+      <p>管理员可以查看全部房间，调整人数上限，批量或全局设置销毁。看不到聊天内容。</p>
       <div class="u062-f u062-pw" id="pw-field">
         <label for="pw">管理员密码</label>
         <span class="u062-caps" id="caps" aria-live="polite">大写锁定已开启</span>
@@ -46,7 +46,24 @@
       <button class="btn soft" type="button" id="refresh" style="flex:none">刷新</button>
       <p>房间码是房间号的前 6 位，和聊天页里显示的一样。列表每 10 秒自动刷新。</p>
     </div>
+
+    <section class="policy" id="policy">
+      <span class="policy-ic" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 1.5M9.5 2.5h5"/></svg></span>
+      <div class="policy-tx"><b>全局自动销毁 <em id="policy-state">未开启</em></b><span id="policy-text">开启后，所有房间（包括以后新开的）都会在设定时间内自动销毁，房间和聊天记录一起删除。</span></div>
+      <button class="btn dark" type="button" id="policy-open">设置</button>
+    </section>
+
     <div class="admin-stats" id="stats"></div>
+
+    <div class="batch" id="batch">
+      <label class="chk"><input type="checkbox" id="select-all"> 全选</label>
+      <span class="batch-count" id="batch-count">勾选房间后可以批量操作</span>
+      <div class="batch-acts">
+        <button class="btn soft" type="button" id="batch-timer" disabled>设销毁倒计时</button>
+        <button class="btn soft" type="button" id="batch-cancel" disabled>取消倒计时</button>
+        <button class="btn danger" type="button" id="batch-destroy" disabled>立即销毁</button>
+      </div>
+    </div>
     <div class="rooms" id="rooms"></div>
   </div>
 </main>
@@ -90,6 +107,55 @@
     <!-- Lucian UX/UI Prompt #269 · MIT License (c) 2026 Seokwoooo · https://lucianlabs.dev/uxui-prompt/#269 -->
     <div class="u269-dg"><b>危险操作</b><div><span>立即删除房间和全部聊天记录，在线的人会被请出。</span><button type="button" class="u269-dz" id="destroy-now">立即销毁</button></div></div>
     <button class="btn ghost" type="button" id="sheet-close">关闭</button>
+  </section>
+</div>
+
+<!-- 批量设置倒计时 -->
+<div class="admin-sheet" id="batch-sheet">
+  <div class="sheet-dim" aria-hidden="true"></div>
+  <section class="sheet" role="dialog" aria-modal="true" aria-labelledby="batch-title">
+    <span class="sheet-grip" aria-hidden="true"></span>
+    <h4 id="batch-title">给选中的房间设销毁倒计时</h4>
+    <p class="sheet-meta" id="batch-meta"></p>
+    <div class="sheet-sec">
+      <!-- Lucian UX/UI Prompt #017 · MIT License (c) 2026 Seokwoooo · https://lucianlabs.dev/uxui-prompt/#017 -->
+      <div class="ux u017 hours" id="batch-hours" style="--v:.4545">
+        <div class="u017-head"><b>销毁时间</b><span>1～12 小时</span></div>
+        <div class="u017-track">
+          <span class="u017-fill" aria-hidden="true"></span>
+          <span class="u017-bub" aria-hidden="true"><span class="u017-val">6 小时</span></span>
+          <span class="u017-thumb" role="slider" tabindex="0" aria-label="几小时后销毁" aria-valuenow="6" aria-valuetext="6 小时"></span>
+        </div>
+        <div class="u017-ticks" aria-hidden="true"></div>
+      </div>
+      <div class="sheet-row"><button class="btn dark" type="button" id="batch-go"></button></div>
+    </div>
+    <button class="btn ghost" type="button" data-close>关闭</button>
+  </section>
+</div>
+
+<!-- 全局自动销毁 -->
+<div class="admin-sheet" id="policy-sheet">
+  <div class="sheet-dim" aria-hidden="true"></div>
+  <section class="sheet" role="dialog" aria-modal="true" aria-labelledby="policy-title">
+    <span class="sheet-grip" aria-hidden="true"></span>
+    <h4 id="policy-title">全局自动销毁</h4>
+    <p class="sheet-meta">所有房间都会在设定时间内自动销毁，房间和聊天记录、文件一起删除：现有的房间从现在开始计时，以后新开的房间从创建时开始计时。房主自己设的更短的倒计时照样有效。</p>
+    <div class="sheet-sec">
+      <div class="timer-now" id="policy-now" hidden><span id="policy-now-text"></span><button type="button" id="policy-off">关闭全局销毁</button></div>
+      <!-- Lucian UX/UI Prompt #017 · MIT License (c) 2026 Seokwoooo · https://lucianlabs.dev/uxui-prompt/#017 -->
+      <div class="ux u017 hours" id="policy-hours" style="--v:.1377">
+        <div class="u017-head"><b>最长存在多久</b><span>1～168 小时（一周）</span></div>
+        <div class="u017-track">
+          <span class="u017-fill" aria-hidden="true"></span>
+          <span class="u017-bub" aria-hidden="true"><span class="u017-val">24 小时</span></span>
+          <span class="u017-thumb" role="slider" tabindex="0" aria-label="房间最长存在几小时" aria-valuenow="24" aria-valuetext="24 小时"></span>
+        </div>
+        <div class="u017-ticks" aria-hidden="true"></div>
+      </div>
+      <div class="sheet-row"><button class="btn dark" type="button" id="policy-go"></button></div>
+    </div>
+    <button class="btn ghost" type="button" data-close>关闭</button>
   </section>
 </div>
 

@@ -119,15 +119,18 @@ window.UI = (function () {
 
   /* ---------- 1～12 小时滑块 ---------- */
   /* Lucian UX/UI Prompt #017 · MIT License (c) 2026 Seokwoooo · https://lucianlabs.dev/uxui-prompt/#017 */
-  function hourSlider(root, onChange) {
+  // opts：{ min, max, value, ticks, page }，默认 1～12 小时
+  function hourSlider(root, onChange, opts) {
+    opts = opts || {};
     var track = root.querySelector('.u017-track');
     var thumb = root.querySelector('.u017-thumb');
     var bub = root.querySelector('.u017-bub');
     var out = root.querySelector('.u017-val');
     var tickBox = root.querySelector('.u017-ticks');
-    var MIN = 1, MAX = 12, STEP = 1;
-    var v = 6, lastX = 0, lastT = 0, still = 0;
-    var ticks = [1, 3, 6, 9, 12].map(function (h) {
+    var MIN = opts.min || 1, MAX = opts.max || 12, STEP = 1, PAGE = opts.page || 3;
+    var v = opts.value || 6, lastX = 0, lastT = 0, still = 0;
+    thumb.setAttribute('aria-valuemin', MIN); thumb.setAttribute('aria-valuemax', MAX);
+    var ticks = (opts.ticks || [1, 3, 6, 9, 12]).map(function (h) {
       var s = document.createElement('span');
       s.textContent = h + 'h';
       s.style.setProperty('--p', ((h - MIN) / (MAX - MIN)).toFixed(4));
@@ -176,7 +179,7 @@ window.UI = (function () {
     track.addEventListener('pointerup', end);
     track.addEventListener('pointercancel', end);
     thumb.addEventListener('keydown', function (e) {
-      var d = { ArrowRight: STEP, ArrowUp: STEP, ArrowLeft: -STEP, ArrowDown: -STEP, PageUp: 3, PageDown: -3 }[e.key];
+      var d = { ArrowRight: STEP, ArrowUp: STEP, ArrowLeft: -STEP, ArrowDown: -STEP, PageUp: PAGE, PageDown: -PAGE }[e.key];
       if (e.key === 'Home') d = -MAX; if (e.key === 'End') d = MAX;
       if (!d) return;
       e.preventDefault();
@@ -185,7 +188,7 @@ window.UI = (function () {
       render();
     });
     render();
-    return { get value() { return v; } };
+    return { get value() { return v; }, set: function (n) { v = Math.max(MIN, Math.min(MAX, n)); render(); } };
   }
 
   /* ---------- 人数上限加减器 ---------- */
@@ -234,7 +237,7 @@ window.UI = (function () {
   function destroyConfirm(host) {
     var root = document.createElement('div');
     root.className = 'ux u269 confirm';
-    root.innerHTML = '<div class="u269-dim" aria-hidden="true"></div><div class="u269-md" role="alertdialog" aria-modal="true" aria-hidden="true"><h4 class="u269-ht"><i aria-hidden="true">!</i>立即销毁这个房间？</h4><p>房间和全部聊天记录会马上从服务器删除，在线的人会被请出，无法恢复。输入下面的房间码确认。</p><div class="u269-nm" aria-hidden="true"></div><input class="u269-in" aria-label="输入房间码" autocomplete="off" spellcheck="false" autocapitalize="characters"><div class="u269-bs"><button type="button" class="u269-cx">取消</button><button type="button" class="u269-go" disabled>永久销毁</button></div></div>';
+    root.innerHTML = '<div class="u269-dim" aria-hidden="true"></div><div class="u269-md" role="alertdialog" aria-modal="true" aria-hidden="true"><h4 class="u269-ht"><i aria-hidden="true">!</i><span></span></h4><p></p><div class="u269-nm" aria-hidden="true"></div><input class="u269-in" aria-label="输入房间码" autocomplete="off" spellcheck="false" autocapitalize="characters"><div class="u269-bs"><button type="button" class="u269-cx">取消</button><button type="button" class="u269-go" disabled>永久销毁</button></div></div>';
     host.appendChild(root);
     var md = root.querySelector('.u269-md'), nm = root.querySelector('.u269-nm'), inp = root.querySelector('.u269-in'), go = root.querySelector('.u269-go'), cx = root.querySelector('.u269-cx'), dim = root.querySelector('.u269-dim');
     var uid = 'u269' + Math.random().toString(36).slice(2, 7); root.querySelector('.u269-ht').id = uid; md.setAttribute('aria-labelledby', uid);
@@ -256,11 +259,17 @@ window.UI = (function () {
     dim.addEventListener('click', function () { close(false); });
     root.addEventListener('keydown', function (e) {
       if (e.key === 'Escape' && root.classList.contains('is-m')) { e.stopPropagation(); close(false); }
-      if (e.key === 'Enter' && document.activeElement === inp && !go.disabled) go.click();
+      // 吃掉这次回车：不然焦点回到“立即销毁”按钮后，同一下回车会再点它一次，把确认框又打开
+      if (e.key === 'Enter' && document.activeElement === inp) { e.preventDefault(); if (!go.disabled) go.click(); }
     });
     inp.addEventListener('input', sync);
-    return function ask(code) {
+    var ht = root.querySelector('.u269-ht span'), desc = md.querySelector('p');
+    // ask(要输入的码, { title, text })：默认是销毁单个房间的文案
+    return function ask(code, words) {
       if (done) close(false);
+      words = words || {};
+      ht.textContent = words.title || '立即销毁这个房间？';
+      desc.textContent = words.text || '房间和全部聊天记录会马上从服务器删除，在线的人会被请出，无法恢复。输入下面的房间码确认。';
       NAME = code.toUpperCase();
       nm.innerHTML = ''; L = NAME.split('').map(function (ch) { var s = document.createElement('span'); s.textContent = ch; nm.appendChild(s); return s; });
       back = document.activeElement;
@@ -290,6 +299,12 @@ window.UI = (function () {
     if (diff === 1) return '昨天';
     return (d.getFullYear() !== today.getFullYear() ? d.getFullYear() + '年' : '') + (d.getMonth() + 1) + '月' + d.getDate() + '日';
   }
+  function fmtBytes(n) {
+    if (n < 1024) return n + ' B';
+    var u = ['KB', 'MB', 'GB', 'TB'], i = -1;
+    do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
+    return (n < 10 ? n.toFixed(1) : Math.round(n)) + ' ' + u[i];
+  }
   function fmtAgo(sec) {
     if (sec < 60) return '刚刚';
     if (sec < 3600) return Math.floor(sec / 60) + ' 分钟前';
@@ -297,5 +312,5 @@ window.UI = (function () {
     return Math.floor(sec / 86400) + ' 天前';
   }
 
-  return { esc: esc, themeButton: themeButton, toast: toast, hourSlider: hourSlider, stepper: stepper, destroyConfirm: destroyConfirm, fmtLeft: fmtLeft, fmtClock: fmtClock, fmtDay: fmtDay, fmtAgo: fmtAgo };
+  return { esc: esc, themeButton: themeButton, toast: toast, hourSlider: hourSlider, stepper: stepper, destroyConfirm: destroyConfirm, fmtLeft: fmtLeft, fmtClock: fmtClock, fmtDay: fmtDay, fmtAgo: fmtAgo, fmtBytes: fmtBytes };
 })();

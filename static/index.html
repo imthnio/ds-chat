@@ -72,10 +72,12 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/></svg>
       </button>
     </div>
-    <div class="timer-strip" id="timer-strip"><div><p><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8.5" r="5.5"/><path d="M8 5.5v3l2 1.3M6.5 1.5h3"/></svg><span>房间将在 <b id="timer-left"></b> 后销毁</span></p></div></div>
+    <div class="timer-strip" id="timer-strip"><div><p><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8.5" r="5.5"/><path d="M8 5.5v3l2 1.3M6.5 1.5h3"/></svg><span>房间将在 <b id="timer-left"></b> 后销毁<span id="timer-strip-why"></span></span></p></div></div>
     <div class="u078-log" id="log" aria-live="polite"></div>
     <div class="u078-reply" id="reply"><div><div class="u078-rbox"><span><b></b><em></em></span><button class="u078-rx" type="button" aria-label="取消回复" tabindex="-1"><svg viewBox="0 0 12 12"><path d="M3 3l6 6M9 3L3 9"/></svg></button></div></div></div>
     <form class="u078-bar" id="composer">
+      <button class="att-btn" type="button" id="attach" aria-label="发送图片、视频或文件" title="发送图片、视频或文件（也可以直接拖进来或粘贴）"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 11.5l-8.4 8.4a5.2 5.2 0 0 1-7.4-7.4l8.6-8.6a3.5 3.5 0 0 1 5 5l-8.6 8.6a1.8 1.8 0 0 1-2.5-2.5l7.9-7.9"/></svg></button>
+      <input type="file" id="file-in" multiple hidden>
       <input class="u078-in" id="msg" type="text" placeholder="输入消息" aria-label="消息" autocomplete="off" maxlength="4000" enterkeyhint="send">
       <button class="u078-send" id="send" type="submit" aria-label="发送"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.5 10L16.5 3.5 12 16.5 9.5 11z"/></svg></button>
     </form>
@@ -121,6 +123,7 @@
         <div class="u269-dg"><b>危险操作</b><div><span>立即删除房间和全部聊天记录，在线的人会被请出。</span><button type="button" class="u269-dz" id="destroy-now">立即销毁</button></div></div>
       </div>
       <p class="sheet-meta" id="no-manage" hidden>只有房间创建者和管理员可以销毁房间。</p>
+      <p class="sheet-meta policy-note" id="policy-note" hidden></p>
 
       <button class="btn ghost" type="button" id="leave">退出房间</button>
     </section>
