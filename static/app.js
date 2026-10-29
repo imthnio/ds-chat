@@ -139,7 +139,7 @@
   });
 
   /* ---------- 房间连接 ---------- */
-  var room = null, ws = null, me = null, info = { creator: false, admin: false, destroyAt: null, online: 0, limit: 7 };
+  var room = null, ws = null, me = null, info = { creator: false, admin: false, destroyAt: null, own: null, policyAt: null, online: 0, limit: 7 };
   var skew = 0, retry = 0, retryT = 0, leaving = false, seen = {}, lastDay = '', firstJoin = null;
 
   function wsUrl() { return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws'; }
@@ -180,7 +180,7 @@
     if (m.t === 'joined') {
       retry = 0;
       skew = m.now - Date.now() / 1000;
-      info.creator = m.creator; info.admin = m.admin; info.destroyAt = m.destroyAt; info.online = m.online; info.limit = m.limit;
+      info.creator = m.creator; info.admin = m.admin; info.destroyAt = m.destroyAt; info.own = m.own; info.policyAt = m.policyAt; info.online = m.online; info.limit = m.limit;
       if (m.token) store.set('dschat:tok:' + room.id, m.token);
       var wasHere = store.get('dschat:seen:' + room.id);
       store.set('dschat:me:' + room.id, me);
@@ -221,10 +221,16 @@
     } else if (m.t === 'typing') {
       showTyping();
     } else if (m.t === 'timer') {
-      info.destroyAt = m.destroyAt; renderTimer();
-      var who = m.by === 'admin' ? '管理员' : '创建者';
-      if (m.destroyAt) UI.toast('warn', who + '设置了销毁倒计时', '房间将在 ' + UI.fmtLeft(m.destroyAt - now()) + ' 后销毁');
-      else UI.toast('info', who + '取消了销毁倒计时');
+      info.destroyAt = m.destroyAt; info.own = m.own; info.policyAt = m.policyAt; renderTimer();
+      var left = m.destroyAt ? '房间将在 ' + UI.fmtLeft(m.destroyAt - now()) + ' 后销毁' : '';
+      if (m.by === 'policy') {
+        if (m.policyAt) UI.toast('warn', '管理员开启了全局自动销毁', left);
+        else UI.toast('info', '管理员关闭了全局自动销毁', left);
+      } else {
+        var who = m.by === 'admin' ? '管理员' : '创建者';
+        if (m.own) UI.toast('warn', who + '设置了销毁倒计时', left);
+        else UI.toast('info', who + '取消了销毁倒计时', left);
+      }
     } else if (m.t === 'destroyed' || m.t === 'gone') {
       var why = m.t === 'gone' ? '断线期间房间被销毁了' : { creator: '创建者销毁了房间', admin: '管理员销毁了房间', timer: '倒计时结束，房间已自动销毁', idle: '房间太久没人使用，已清理' }[m.by] || '';
       forget(room.id);
@@ -240,7 +246,7 @@
     leaving = true; clearTimeout(retryT);
     if (ws) { var s = ws; ws = null; try { s.close(); } catch (e) {} }
     room = null; seen = {};
-    closeSheet(); clearReply(); hideTyping(true);
+    closeSheet(); clearReply(); hideTyping(true); dropFiles();
   }
   function send(obj) {
     if (!ws || ws.readyState !== 1) return false;
@@ -262,7 +268,7 @@
     document.body.classList.remove('in-chat');
     document.title = 'ds-chat 密钥聊天室';
     $('log').innerHTML = ''; $('msg').value = ''; sendState();
-    info.destroyAt = null; renderTimer();
+    info.destroyAt = info.own = info.policyAt = null; renderTimer();
     keyIn.focus({ preventScroll: true });
   }
 
@@ -289,15 +295,19 @@
   var tick = 0;
   function renderTimer() {
     clearInterval(tick);
-    var on = !!info.destroyAt;
+    var on = !!info.destroyAt, byPolicy = on && info.policyAt && info.destroyAt === info.policyAt;
     $('timer-strip').classList.toggle('on', on);
+    $('timer-strip-why').textContent = byPolicy ? '（管理员设置的全局自动销毁）' : '';
     $('timer-now').hidden = !on;
-    $('timer-set').textContent = (on ? '改为 ' : '') + hours.value + ' 小时后销毁';
+    $('timer-cancel').hidden = !info.own;  // 全局自动销毁取消不了
+    $('policy-note').hidden = !info.policyAt;
+    $('timer-set').textContent = (info.own ? '改为 ' : '') + hours.value + ' 小时后销毁';
     if (!on) return;
     var draw = function () {
       var left = info.destroyAt - now();
       var text = left > 0 ? UI.fmtLeft(left) : '片刻';
       $('timer-left').textContent = text; $('timer-now-left').textContent = text;
+      if (info.policyAt) $('policy-note').textContent = '管理员开启了全局自动销毁：这个房间最晚 ' + UI.fmtLeft(Math.max(0, info.policyAt - now())) + ' 后销毁，这里取消不了。';
     };
     draw(); tick = setInterval(draw, 1000);
   }
@@ -323,20 +333,27 @@
     if (day !== lastDay) { lastDay = day; lastWho = null; var d = document.createElement('p'); d.className = 'u078-day'; d.textContent = day; log.appendChild(d); }
     var mine = !!(o && o.s === me), stick = mine || nearBottom();
     var text = o ? o.x : '无法解密这条消息';
+    var f = o && fileMeta(o.f);
     // 同一个人 5 分钟内连着发的算一组，只有第一条带气泡尾巴
     var who = o ? o.s : '?', head = who !== lastWho || h.ts - lastTs > 300;
     lastWho = who; lastTs = h.ts;
     var m = document.createElement('div');
     m.className = 'u078-m' + (animate ? ' in' : '') + (mine ? ' me' : '') + (o ? '' : ' fail') + (head ? ' tail' : '');
     m.innerHTML = '<span class="u078-rep" aria-hidden="true">' + ARROW + '</span><span class="u078-bub">' +
-      (o && o.r ? '<span class="u078-q"><b>' + (o.rw === 'me' ? (mine ? '你' : '对方') : (mine ? '对方' : '你')) + '</b>' + UI.esc(o.r) + '</span>' : '') + UI.esc(text) +
+      (o && o.r ? '<span class="u078-q"><b>' + (o.rw === 'me' ? (mine ? '你' : '对方') : (mine ? '对方' : '你')) + '</b>' + UI.esc(o.r) + '</span>' : '') +
+      (f ? attHTML(f) : '') + UI.esc(text) +
       '<span class="u078-t"><time>' + UI.fmtClock(h.ts) + '</time>' + (mine ? CHECK : '') + '</span></span>' +
       (mine || !o ? '' : '<button class="u078-rb" type="button" aria-label="回复这条消息">' + ARROW + '</button>');
-    m.setAttribute('data-t', text); m.setAttribute('data-w', mine ? '自己' : '对方');
+    m.setAttribute('data-t', f ? fileLabel(f) + (text ? ' ' + text : '') : text); m.setAttribute('data-w', mine ? '自己' : '对方');
+    if (f) {
+      m.classList.add('has-att');
+      if (uploads[f.id]) { uploads[f.id].el.remove(); delete uploads[f.id]; }  // 自己正在上传的那个占位气泡换成正式消息
+    }
     var ty = log.querySelector('.u078-ty');
     log.insertBefore(m, ty || null);
     m.addEventListener('animationend', function () { m.classList.remove('in'); });
     if (!mine && o) wire(m);
+    if (f) hydrate(m, f);
     if (stick) scrollDown(true);
   }
   function setReply(m) {
@@ -379,6 +396,235 @@
   }
   function hideTyping(yes) { if (!yes) return; clearTimeout(typingT); var ty = log.querySelector('.u078-ty'); if (ty) ty.remove(); }
 
+  /* ---------- 图片、视频、文件 ----------
+     文件在浏览器里切成 1 MB 一块，每块用房间钥匙单独加密（AES-GCM，附带文件号和块号防止被调换），
+     一块一块传上去；服务器只存密文。下载时按块取回、解密、拼起来。不限制文件大小。 */
+  var CHUNK = 1024 * 1024, OVER = 28, AUTO = 20 * 1024 * 1024;
+  var blobs = {}, loading = {}, uploads = {}, upQueue = Promise.resolve(), autoQueue = [], autoBusy = 0;
+  var ICON = {
+    file: '<svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>',
+    vid: '<svg viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5z"/></svg>',
+    aud: '<svg viewBox="0 0 24 24"><path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/></svg>',
+    down: '<svg viewBox="0 0 24 24"><path d="M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M5 20h14"/></svg>',
+    x: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>'
+  };
+  function fileMeta(f) {
+    if (!f || typeof f.id !== 'string' || !/^[0-9a-f]{32}$/.test(f.id) || typeof f.z !== 'number' || f.z < 0) return null;
+    return { id: f.id, n: String(f.n || '未命名').slice(0, 200), t: String(f.t || ''), z: f.z };
+  }
+  function kindOf(f) {
+    var t = f.t;
+    return /^image\/(png|jpe?g|gif|webp|avif|bmp)$/.test(t) ? 'img' : t.indexOf('video/') === 0 ? 'vid' : t.indexOf('audio/') === 0 ? 'aud' : 'file';
+  }
+  function fileLabel(f) { return { img: '[图片] ', vid: '[视频] ', aud: '[音频] ', file: '[文件] ' }[kindOf(f)] + f.n; }
+  function aadFor(rid, fid, i) { return enc.encode(rid + ':' + fid + ':' + i); }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  function attHTML(f) {
+    var k = kindOf(f);
+    if (k === 'img') return '<span class="att img"><span class="att-ph"><b class="att-pct"></b></span></span>';
+    return '<span class="att card ' + k + '"><span class="att-ic">' + ICON[k === 'file' ? 'file' : k] + '</span>' +
+      '<span class="att-tx"><b>' + UI.esc(f.n) + '</b><small>' + UI.fmtBytes(f.z) + '</small></span>' +
+      '<button class="att-go" type="button" aria-label="' + (k === 'file' ? '下载' : '播放') + ' ' + UI.esc(f.n) + '">' + (k === 'file' ? ICON.down : ICON.vid) + '</button>' +
+      '<i class="att-bar" aria-hidden="true"></i></span>';
+  }
+  function setBar(box, p) {
+    var bar = box.querySelector('.att-bar'), pct = box.querySelector('.att-pct');
+    if (bar) { bar.style.width = (p * 100).toFixed(1) + '%'; bar.classList.toggle('on', p > 0 && p < 1); }
+    if (pct) pct.textContent = p > 0 && p < 1 ? Math.round(p * 100) + '%' : '';
+  }
+  function hydrate(m, f) {
+    var k = kindOf(f), box = m.querySelector('.att');
+    if (k === 'img') {
+      var show = function (url) {
+        var img = document.createElement('img');
+        img.src = url; img.alt = f.n; img.loading = 'lazy';
+        img.addEventListener('load', function () { if (nearBottom()) scrollDown(true); });
+        img.addEventListener('click', function () { lightbox(url, f); });
+        box.innerHTML = ''; box.appendChild(img);
+      };
+      var fail = function (e) { box.querySelector('.att-ph').innerHTML = '<b>' + UI.esc(e.message || '加载失败') + '</b>'; };
+      if (blobs[f.id]) { show(blobs[f.id]); return; }
+      if (f.z <= AUTO) { queueAuto(function () { return download(f, function (p) { setBar(box, p); }).then(show, fail); }); return; }
+      var ph = box.querySelector('.att-ph');
+      ph.innerHTML = '<button class="att-load" type="button">点击加载图片（' + UI.fmtBytes(f.z) + '）</button>';
+      ph.querySelector('button').addEventListener('click', function () {
+        ph.innerHTML = '<b class="att-pct"></b>';
+        download(f, function (p) { setBar(box, p); }).then(show, fail);
+      });
+      return;
+    }
+    var go = box.querySelector('.att-go');
+    go.addEventListener('click', function () {
+      if (go.disabled) return;
+      go.disabled = true;
+      download(f, function (p) { setBar(box, p); }).then(function (url) {
+        go.disabled = false; setBar(box, 1);
+        if (k === 'file') { saveAs(url, f.n); return; }
+        var media = document.createElement(k === 'vid' ? 'video' : 'audio');
+        media.controls = true; media.src = url; media.className = 'att-media'; media.preload = 'metadata';
+        var save = document.createElement('button');
+        save.type = 'button'; save.className = 'att-save'; save.innerHTML = ICON.down + '<span>保存' + (k === 'vid' ? '视频' : '音频') + '</span>';
+        save.addEventListener('click', function () { saveAs(url, f.n); });
+        box.replaceWith(media); media.after(save);
+        media.play().catch(function () {});
+      }, function (e) { go.disabled = false; UI.toast('err', '下载失败', e.message); });
+    });
+  }
+  function queueAuto(job) { autoQueue.push(job); pumpAuto(); }
+  function pumpAuto() {
+    while (autoBusy < 2 && autoQueue.length) {
+      autoBusy++;
+      autoQueue.shift()().catch(function () {}).then(function () { autoBusy--; pumpAuto(); });
+    }
+  }
+  function saveAs(url, name) {
+    var a = document.createElement('a');
+    a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  }
+  function lightbox(url, f) {
+    var lb = document.createElement('div');
+    lb.className = 'lightbox'; lb.setAttribute('role', 'dialog'); lb.setAttribute('aria-label', f.n);
+    lb.innerHTML = '<div class="lb-bar"><span>' + UI.esc(f.n) + ' · ' + UI.fmtBytes(f.z) + '</span><button type="button" class="lb-save">' + ICON.down + '保存</button><button type="button" class="lb-x" aria-label="关闭">' + ICON.x + '</button></div><img alt="">';
+    lb.querySelector('img').src = url;
+    var close = function () { lb.remove(); document.removeEventListener('keydown', onKey); };
+    var onKey = function (e) { if (e.key === 'Escape') close(); };
+    lb.addEventListener('click', function (e) { if (e.target === lb || e.target.tagName === 'IMG' || e.target.closest('.lb-x')) close(); });
+    lb.querySelector('.lb-save').addEventListener('click', function (e) { e.stopPropagation(); saveAs(url, f.n); });
+    document.addEventListener('keydown', onKey);
+    document.body.appendChild(lb);
+    lb.querySelector('.lb-x').focus();
+  }
+
+  function download(f, onProgress) {
+    if (blobs[f.id]) return Promise.resolve(blobs[f.id]);
+    var job = loading[f.id];
+    if (job) { job.listeners.push(onProgress); return job.p; }
+    var rid = room.id, key = room.aes, n = Math.max(1, Math.ceil(f.z / CHUNK)), parts = new Array(n), done = 0, next = 0;
+    job = loading[f.id] = { listeners: [onProgress] };
+    async function worker() {
+      while (next < n) {
+        var i = next++, start = i * (CHUNK + OVER), len = Math.min(CHUNK, f.z - i * CHUNK) + OVER, buf = null;
+        for (var t = 0; t < 4 && !buf; t++) {
+          try {
+            var r = await fetch('/api/files/' + rid + '/' + f.id, { headers: { Range: 'bytes=' + start + '-' + (start + len - 1) } });
+            if (r.status === 404) throw Object.assign(new Error('文件已被清理'), { fatal: true });
+            if (!r.ok) throw new Error('下载失败（' + r.status + '）');
+            buf = new Uint8Array(await r.arrayBuffer());
+          } catch (e) { if (e.fatal || t === 3) throw e; await sleep(800 * (t + 1)); }
+        }
+        try {
+          parts[i] = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: buf.slice(0, 12), additionalData: aadFor(rid, f.id, i) }, key, buf.slice(12)));
+        } catch (e) { throw new Error('解密失败'); }
+        done++;
+        job.listeners.forEach(function (cb) { if (cb) cb(done / n); });
+      }
+    }
+    job.p = Promise.all([worker(), worker(), worker()]).then(function () {
+      var url = URL.createObjectURL(new Blob(parts, { type: f.t || 'application/octet-stream' }));
+      if (room && room.id === rid) blobs[f.id] = url;
+      delete loading[f.id];
+      return url;
+    }, function (e) { delete loading[f.id]; throw e; });
+    return job.p;
+  }
+
+  function pending(file) {
+    var el = document.createElement('div');
+    el.className = 'u078-m me tail in has-att uploading';
+    el.innerHTML = '<span class="u078-bub"><span class="att card file"><span class="att-ic">' + ICON.file + '</span>' +
+      '<span class="att-tx"><b></b><small>' + UI.fmtBytes(file.size) + ' · 等待上传</small></span>' +
+      '<button class="att-go" type="button" aria-label="取消上传">' + ICON.x + '</button><i class="att-bar on" aria-hidden="true"></i></span></span>';
+    el.querySelector('b').textContent = file.name || '未命名';
+    var small = el.querySelector('small'), box = el.querySelector('.att');
+    var up = { el: el, cancelled: false };
+    up.status = function (t) { small.textContent = UI.fmtBytes(file.size) + ' · ' + t; };
+    up.progress = function (p) { setBar(box, p); up.status('上传中 ' + Math.round(p * 100) + '%'); };
+    up.fail = function (msg) {
+      el.classList.add('failed'); up.status(msg || '上传失败');
+      var b = el.querySelector('.att-go'); b.setAttribute('aria-label', '移除'); b.onclick = function () { el.remove(); };
+    };
+    el.querySelector('.att-go').onclick = function () { up.cancelled = true; el.remove(); };
+    var ty = log.querySelector('.u078-ty');
+    log.insertBefore(el, ty || null);
+    scrollDown(true);
+    return up;
+  }
+  async function putChunk(base, offset, body) {
+    for (var t = 0; ; t++) {
+      var r;
+      try { r = await fetch(base + '?offset=' + offset, { method: 'PUT', body: body }); }
+      catch (e) { if (t >= 5) throw new Error('网络断了，上传失败'); await sleep(1000 * (t + 1)); continue; }
+      if (r.ok) return (await r.json()).size;
+      if (r.status === 409) {
+        var s = -1; try { s = (await r.json()).size; } catch (e) {}
+        if (s === offset + body.length) return s;  // 这一块其实已经传上去了，只是回应丢了
+      }
+      throw new Error((await r.text().catch(function () { return ''; })) || '上传失败（' + r.status + '）');
+    }
+  }
+  async function uploadOne(file, up, owner) {
+    if (up.cancelled || room !== owner) return;  // 已经离开了发文件时所在的房间
+    var rid = owner.id, key = owner.aes, fid = null;
+    try {
+      var r = await fetch('/api/files/' + rid, { method: 'POST' });
+      if (!r.ok) throw new Error(await r.text() || '上传失败');
+      fid = (await r.json()).id;
+      var base = '/api/files/' + rid + '/' + fid, n = Math.max(1, Math.ceil(file.size / CHUNK)), offset = 0;
+      up.progress(0);
+      for (var i = 0; i < n; i++) {
+        if (up.cancelled || room !== owner) { fetch(base + '/cancel', { method: 'POST' }).catch(function () {}); return; }
+        var plain = await file.slice(i * CHUNK, Math.min(file.size, (i + 1) * CHUNK)).arrayBuffer();
+        var iv = crypto.getRandomValues(new Uint8Array(12));
+        var ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv, additionalData: aadFor(rid, fid, i) }, key, plain));
+        var body = new Uint8Array(12 + ct.length); body.set(iv); body.set(ct, 12);
+        offset = await putChunk(base, offset, body);
+        up.progress((i + 1) / n);
+      }
+      r = await fetch(base + '/done', { method: 'POST' });
+      if (!r.ok) throw new Error('上传失败');
+      if (up.cancelled || room !== owner) return;
+      blobs[fid] = URL.createObjectURL(file);  // 自己发的不用再下载一遍
+      uploads[fid] = up;
+      up.status('发送中');
+      var data = await seal({ s: me, x: '', f: { id: fid, n: file.name || '未命名', t: file.type || 'application/octet-stream', z: file.size } });
+      if (!send({ t: 'msg', data: data, file: fid })) throw new Error('还没连上，没发出去');
+    } catch (e) {
+      if (fid) delete uploads[fid];
+      up.fail(e.message);
+    }
+  }
+  function sendFiles(list) {
+    if (!room || !ws || ws.readyState !== 1) { UI.toast('err', '还没连上，文件没发出去'); return; }
+    var owner = room;
+    Array.prototype.forEach.call(list, function (file) {
+      var up = pending(file);
+      upQueue = upQueue.then(function () { return uploadOne(file, up, owner); });  // 一个一个传，不抢网速也不占内存
+    });
+  }
+  function dropFiles() {
+    Object.keys(uploads).forEach(function (k) { uploads[k].cancelled = true; });
+    log.querySelectorAll('.uploading').forEach(function (el) { el.remove(); });
+    Object.keys(blobs).forEach(function (k) { URL.revokeObjectURL(blobs[k]); });
+    blobs = {}; uploads = {}; autoQueue = [];
+    upQueue = Promise.resolve();
+    document.querySelectorAll('.lightbox').forEach(function (el) { el.remove(); });
+  }
+  $('attach').addEventListener('click', function () { $('file-in').click(); });
+  $('file-in').addEventListener('change', function () { if (this.files.length) sendFiles(this.files); this.value = ''; });
+  input.addEventListener('paste', function (e) {
+    var files = e.clipboardData && e.clipboardData.files;
+    if (files && files.length) { e.preventDefault(); sendFiles(files); }
+  });
+  var dragDepth = 0, chatEl = $('chat');
+  chatEl.addEventListener('dragenter', function (e) { if (e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types, 'Files') >= 0) { dragDepth++; chatEl.classList.add('dropping'); } });
+  chatEl.addEventListener('dragleave', function () { if (--dragDepth <= 0) { dragDepth = 0; chatEl.classList.remove('dropping'); } });
+  chatEl.addEventListener('dragover', function (e) { if (chatEl.classList.contains('dropping')) e.preventDefault(); });
+  chatEl.addEventListener('drop', function (e) {
+    dragDepth = 0; chatEl.classList.remove('dropping');
+    if (e.dataTransfer && e.dataTransfer.files.length) { e.preventDefault(); sendFiles(e.dataTransfer.files); }
+  });
+
   function sendState() {
     var on = !!input.value.trim();
     sendBtn.classList.toggle('go', on);
@@ -407,7 +653,7 @@
 
   /* ---------- 房间设置面板 ---------- */
   var chat = $('chat'), sheet = $('sheet');
-  var hours = UI.hourSlider($('hours'), function (v) { if ($('timer-set')) $('timer-set').textContent = (info.destroyAt ? '改为 ' : '') + v + ' 小时后销毁'; });
+  var hours = UI.hourSlider($('hours'), function (v) { if ($('timer-set')) $('timer-set').textContent = (info.own ? '改为 ' : '') + v + ' 小时后销毁'; });
   var ask = UI.destroyConfirm(chat);
   var limitT = 0;
   var limit = UI.stepper($('limit'), 2, 7, function (v) {

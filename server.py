@@ -24,6 +24,7 @@ import logging
 import os
 import re
 import secrets
+import shutil
 import signal
 import sqlite3
 import ssl
@@ -44,12 +45,16 @@ MAX_CONN = int(os.environ.get("MAX_CONN", "200"))  # 同时最多多少个连接
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
 MAX_HOURS = 12
+MAX_POLICY_HOURS = 168  # 全局自动销毁最长一周
 MIN_PEOPLE, MAX_PEOPLE = 2, 7  # 房间人数上限可调的范围，新房间默认 MAX_PEOPLE
 HISTORY = 300          # 进入房间时发回最近多少条
 KEEP = 1000            # 每个房间最多保存多少条
 MAX_CIPHER = 16_000    # 一条密文最长多少字符（约 1 万字明文）
 MAX_ROOMS = 20_000
 MAX_BODY = 64 * 1024   # HTTP 请求体和 WebSocket 单条消息的上限
+CHUNK_MAX = 2 * 1024 * 1024  # 上传文件时每一块（已加密）的上限；浏览器每块传 1 MB
+MIN_FREE_MB = int(os.environ.get("MIN_FREE_MB", "300"))  # 硬盘剩余少于这么多 MB 就不收新文件，免得把机器塞满
+FILE_ID = re.compile(r"^[0-9a-f]{32}$")
 ADMIN_TTL = 12 * 3600
 ROOM_ID = re.compile(r"^[0-9a-f]{64}$")
 
@@ -81,7 +86,9 @@ log = logging.getLogger("ds-chat")
 def open_db():
     os.makedirs(DATA_DIR, exist_ok=True)
     db = sqlite3.connect(os.path.join(DATA_DIR, "chat.db"), isolation_level=None)
+    db.execute("PRAGMA auto_vacuum=INCREMENTAL")  # 新数据库：删掉的数据腾出的空间可以还给硬盘
     db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA journal_size_limit=1048576")  # WAL 临时文件清理后最多留 1 MB
     db.execute("PRAGMA foreign_keys=ON")
     db.execute("PRAGMA cache_size=-1024")  # 页缓存只给 1 MB
     db.executescript("""
@@ -100,9 +107,26 @@ def open_db():
             data TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS messages_room ON messages(room, id);
+        CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT);
+        CREATE TABLE IF NOT EXISTS files (
+            id TEXT PRIMARY KEY,
+            room TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+            size INTEGER NOT NULL DEFAULT 0,
+            done INTEGER NOT NULL DEFAULT 0,
+            created REAL NOT NULL,
+            updated REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS files_room ON files(room);
     """)
     if "max_people" not in [c[1] for c in db.execute("PRAGMA table_info(rooms)")]:
         db.execute(f"ALTER TABLE rooms ADD COLUMN max_people INTEGER NOT NULL DEFAULT {MAX_PEOPLE}")
+    if "file" not in [c[1] for c in db.execute("PRAGMA table_info(messages)")]:
+        db.execute("ALTER TABLE messages ADD COLUMN file TEXT")  # 这条消息带的文件，删消息时一起删
+    db.execute("CREATE INDEX IF NOT EXISTS messages_file ON messages(file) WHERE file IS NOT NULL")
+    if db.execute("PRAGMA auto_vacuum").fetchone()[0] != 2:
+        # 旧版本建的数据库没开自动瘦身：整理一次就开上了（数据库很小，一眨眼的事）
+        db.execute("PRAGMA auto_vacuum=INCREMENTAL")
+        db.execute("VACUUM")
     return db
 
 
@@ -137,8 +161,9 @@ class HTTPError(Exception):
 
 
 class Request:
-    def __init__(self, method, path, headers, body, remote, tls=False):
+    def __init__(self, method, path, headers, body, remote, tls=False, query=""):
         self.tls = tls
+        self.query = dict(p.partition("=")[::2] for p in query.split("&") if p)
         self.method = method
         self.path = path
         self.headers = headers  # 键都是小写
@@ -185,18 +210,18 @@ SECURITY_HEADERS = {
     "Referrer-Policy": "no-referrer",
     "X-Frame-Options": "DENY",
     "Content-Security-Policy": (
-        "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data:; "
+        "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data: blob:; media-src 'self' blob:; "
         "style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'none'"
     ),
 }
 
 
-def encode_response(resp, head_only=False, keep_alive=True):
+def encode_response(resp, head_only=False, keep_alive=True, length=None):
     phrase = http.HTTPStatus(resp.status).phrase
     lines = [f"HTTP/1.1 {resp.status} {phrase}"]
     headers = dict(SECURITY_HEADERS)
     headers.update(resp.headers)
-    headers["Content-Length"] = str(len(resp.body))
+    headers["Content-Length"] = str(len(resp.body) if length is None else length)
     headers["Connection"] = "keep-alive" if keep_alive else "close"
     lines += [f"{k}: {v}" for k, v in headers.items()]
     lines += [f"Set-Cookie: {c}" for c in resp.cookies]
@@ -353,6 +378,39 @@ class Hub:
         self.db = db
         self.online = {}  # 房间号 -> 在线连接
         self.kind = {}    # 连接 -> "creator" / "admin" / "member"
+        self.dirty = False  # 删过东西，等着把空间还给硬盘
+        conf = dict(db.execute("SELECT k, v FROM settings"))
+        self.policy_hours = int(conf["policy_hours"]) if conf.get("policy_hours") else None
+        self.policy_since = float(conf.get("policy_since") or 0)
+
+    # --- 全局自动销毁：所有房间（含以后新开的）最多活 policy_hours 小时。
+    #     开启前就有的房间从开启时算起，之后新开的从创建时算起。
+    def policy_at(self, created):
+        if not self.policy_hours:
+            return None
+        return max(created, self.policy_since) + self.policy_hours * 3600
+
+    def timer_info(self, row):
+        """房间什么时候销毁：房主/管理员单独设的倒计时和全局自动销毁，哪个早算哪个。"""
+        own, pol = row[4], self.policy_at(row[2])
+        times = [t for t in (own, pol) if t is not None]
+        return {"destroyAt": min(times) if times else None, "own": own, "policyAt": pol}
+
+    async def set_policy(self, hours):
+        self.policy_hours = hours
+        self.policy_since = time.time()
+        self.db.execute("INSERT OR REPLACE INTO settings (k, v) VALUES ('policy_hours', ?)", (str(hours or ""),))
+        self.db.execute("INSERT OR REPLACE INTO settings (k, v) VALUES ('policy_since', ?)", (str(self.policy_since),))
+        for rid in list(self.online):
+            row = self.room(rid)
+            if row:
+                await self.broadcast(rid, {"t": "timer", **self.timer_info(row), "by": "policy"})
+
+    def compact(self):
+        """把删掉的房间和消息腾出的空间还给硬盘，并清掉 WAL 临时文件。"""
+        self.db.execute("PRAGMA incremental_vacuum").fetchall()
+        self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+        self.dirty = False
 
     def room(self, rid):
         return self.db.execute(
@@ -377,12 +435,15 @@ class Hub:
         ).fetchall()
         return [{"id": i, "ts": ts, "data": d} for i, ts, d in reversed(rows)]
 
-    def add_message(self, rid, data):
+    def add_message(self, rid, data, file=None):
         now = time.time()
-        cur = self.db.execute("INSERT INTO messages (room, ts, data) VALUES (?,?,?)", (rid, now, data))
-        self.db.execute(
-            "DELETE FROM messages WHERE room=? AND id <= ?", (rid, cur.lastrowid - KEEP)
-        )
+        cur = self.db.execute("INSERT INTO messages (room, ts, data, file) VALUES (?,?,?,?)", (rid, now, data, file))
+        old = cur.lastrowid - KEEP
+        for (fid,) in self.db.execute(
+                "SELECT file FROM messages WHERE room=? AND id <= ? AND file IS NOT NULL", (rid, old)).fetchall():
+            self.delete_file(rid, fid)  # 太旧被清掉的消息，带的文件也删
+        if self.db.execute("DELETE FROM messages WHERE room=? AND id <= ?", (rid, old)).rowcount:
+            self.dirty = True
         self.db.execute("UPDATE rooms SET last_active=? WHERE id=?", (now, rid))
         return {"id": cur.lastrowid, "ts": now, "data": data}
 
@@ -404,7 +465,7 @@ class Hub:
             return True
         at = None if hours is None else time.time() + hours * 3600
         self.db.execute("UPDATE rooms SET destroy_at=? WHERE id=?", (at, rid))
-        await self.broadcast(rid, {"t": "timer", "destroyAt": at, "by": by})
+        await self.broadcast(rid, {"t": "timer", **self.timer_info(self.room(rid)), "by": by})
         return True
 
     def members(self, rid):
@@ -418,12 +479,52 @@ class Hub:
         await self.broadcast(rid, {"t": "limit", "value": n, "by": by})
         return True
 
+    # --- 文件：存在 data/files/<房间号>/<文件号>，内容是浏览器加密过的 ---
+    @staticmethod
+    def file_path(rid, fid):
+        return os.path.join(DATA_DIR, "files", rid, fid)
+
+    def delete_file(self, rid, fid):
+        self.db.execute("DELETE FROM files WHERE id=? AND room=?", (fid, rid))
+        try:
+            os.remove(self.file_path(rid, fid))
+        except OSError:
+            pass
+        self.dirty = True
+
+    def sweep_files(self):
+        """清理文件垃圾：传到一半放弃的、传完但没发出去的、房间已经没了的。"""
+        now = time.time()
+        for rid, fid in self.db.execute(
+                "SELECT room, id FROM files WHERE done=0 AND updated < ?", (now - 6 * 3600,)).fetchall():
+            self.delete_file(rid, fid)
+        for rid, fid in self.db.execute("""
+                SELECT f.room, f.id FROM files f WHERE f.done=1 AND f.updated < ?
+                AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.file = f.id)""", (now - 3600,)).fetchall():
+            self.delete_file(rid, fid)
+        root = os.path.join(DATA_DIR, "files")
+        if os.path.isdir(root):
+            rooms = {r for (r,) in self.db.execute("SELECT id FROM rooms")}
+            for rid in os.listdir(root):
+                if rid not in rooms:
+                    shutil.rmtree(os.path.join(root, rid), ignore_errors=True)
+                    continue
+                known = {f for (f,) in self.db.execute("SELECT id FROM files WHERE room=?", (rid,))}
+                for fid in os.listdir(os.path.join(root, rid)):
+                    if fid not in known:
+                        try:
+                            os.remove(os.path.join(root, rid, fid))
+                        except OSError:
+                            pass
+
     async def destroy(self, rid, by):
-        self.db.execute("DELETE FROM rooms WHERE id=?", (rid,))
+        self.db.execute("DELETE FROM rooms WHERE id=?", (rid,))  # 消息和文件记录跟着一起删（ON DELETE CASCADE）
+        shutil.rmtree(os.path.join(DATA_DIR, "files", rid), ignore_errors=True)
+        self.dirty = True
         await self.broadcast(rid, {"t": "destroyed", "by": by})
         for ws in list(self.online.pop(rid, ())):
             await ws.close(4000, b"destroyed")
-        log.info("房间 %s 已销毁（%s）", rid[:6], by)
+        log.debug("房间 %s 已销毁（%s）", rid[:6], by)
 
     async def sweep(self):
         """到点的倒计时、太久没人用的房间。"""
@@ -432,6 +533,12 @@ class Hub:
             "SELECT id FROM rooms WHERE destroy_at IS NOT NULL AND destroy_at <= ?", (now,))]
         for rid in due:
             await self.destroy(rid, "timer")
+        if self.policy_hours:
+            due = [r for (r,) in self.db.execute(
+                "SELECT id FROM rooms WHERE MAX(created, ?) <= ?",
+                (self.policy_since, now - self.policy_hours * 3600))]
+            for rid in due:
+                await self.destroy(rid, "timer")
         if IDLE_DAYS > 0:
             stale = [r for (r,) in self.db.execute(
                 "SELECT id FROM rooms WHERE last_active < ?", (now - IDLE_DAYS * 86400,))]
@@ -521,6 +628,12 @@ class App:
                 resp = json_response({"ok": True})
                 resp.cookies.append("dsadmin=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict")
                 return resp
+            if path == "/api/admin/rooms/batch":
+                self.need_admin(request)
+                return await self.admin_batch(request.json())
+            if path == "/api/admin/policy":
+                self.need_admin(request)
+                return await self.admin_policy(request.json())
             m = re.match(r"^/api/admin/rooms/([0-9a-f]{64})/(timer|limit)$", path)
             if m:
                 self.need_admin(request)
@@ -552,14 +665,49 @@ class App:
     def admin_rooms(self):
         hub = self.hub
         rows = hub.db.execute("""
-            SELECT r.id, r.created, r.last_active, r.destroy_at, r.max_people, COUNT(m.id)
-            FROM rooms r LEFT JOIN messages m ON m.room = r.id
-            GROUP BY r.id ORDER BY r.last_active DESC
+            SELECT r.id, r.created, r.last_active, r.destroy_at, r.max_people,
+                   (SELECT COUNT(*) FROM messages m WHERE m.room = r.id),
+                   (SELECT COUNT(*) FROM files f WHERE f.room = r.id AND f.done = 1),
+                   (SELECT COALESCE(SUM(size), 0) FROM files f WHERE f.room = r.id)
+            FROM rooms r ORDER BY r.last_active DESC
         """).fetchall()
-        return json_response({"now": time.time(), "rooms": [{
-            "id": rid, "code": rid[:6].upper(), "created": created, "lastActive": active,
-            "destroyAt": at, "limit": limit, "messages": n, "online": len(hub.online.get(rid, ())),
-        } for rid, created, active, at, limit, n in rows]})
+        try:
+            db_bytes = sum(os.path.getsize(os.path.join(DATA_DIR, n)) for n in os.listdir(DATA_DIR)
+                           if n.startswith("chat.db"))
+        except OSError:
+            db_bytes = 0
+        return json_response({
+            "now": time.time(),
+            "policy": {"hours": hub.policy_hours, "since": hub.policy_since if hub.policy_hours else None},
+            "storage": {"files": sum(r[7] for r in rows), "db": db_bytes, "freeMb": self.free_mb()},
+            "rooms": [{
+                "id": rid, "code": rid[:6].upper(), "created": created, "lastActive": active,
+                **hub.timer_info((rid, None, created, active, at, limit)),
+                "limit": limit, "messages": n, "files": nf, "fileBytes": fb,
+                "online": len(hub.online.get(rid, ())),
+            } for rid, created, active, at, limit, n, nf, fb in rows],
+        })
+
+    async def admin_batch(self, body):
+        ids = body.get("ids")
+        hours = parse_hours(body.get("hours"))
+        if hours is False or not isinstance(ids, list) or not 0 < len(ids) <= 5000 \
+                or not all(isinstance(i, str) and ROOM_ID.match(i) for i in ids):
+            raise HTTPError(400, "参数不对")
+        done = 0
+        for rid in dict.fromkeys(ids):
+            if await self.hub.set_timer(rid, hours, "admin"):
+                done += 1
+        return json_response({"ok": True, "done": done})
+
+    async def admin_policy(self, body):
+        hours = body.get("hours")
+        if hours is not None and not (isinstance(hours, int) and not isinstance(hours, bool)
+                                      and 1 <= hours <= MAX_POLICY_HOURS):
+            raise HTTPError(400, f"时长只能是 1～{MAX_POLICY_HOURS} 小时")
+        await self.hub.set_policy(hours)
+        await self.hub.sweep()
+        return json_response({"ok": True})
 
     async def admin_room_action(self, rid, action, body):
         if action == "timer":
@@ -594,6 +742,16 @@ class App:
                     await self.websocket(request, reader, writer)
                     return
                 keep = request.headers.get("connection", "").lower() != "close"
+                if request.path.startswith("/api/files/"):
+                    try:
+                        keep = await self.files(request, reader, writer) and keep
+                    except HTTPError as e:
+                        writer.write(encode_response(Response(e.text, e.status), keep_alive=False))
+                        await asyncio.wait_for(writer.drain(), 30)
+                        return
+                    if not keep:
+                        return
+                    continue
                 try:
                     resp = await self.route(request)
                 except HTTPError as e:
@@ -635,14 +793,148 @@ class App:
             headers[k.strip().lower()] = v.strip()
         else:
             return None
+        url = urlsplit(target)
+        path = url.path or "/"
         length = int(headers.get("content-length", "0") or 0)
-        if length > MAX_BODY or "chunked" in headers.get("transfer-encoding", ""):
+        # 上传文件的那一块不在这里读：交给 files() 边收边写硬盘，不占内存
+        upload = method.upper() == "PUT" and path.startswith("/api/files/")
+        if length > (CHUNK_MAX if upload else MAX_BODY) or "chunked" in headers.get("transfer-encoding", ""):
             writer.write(encode_response(Response("请求太大", 413), keep_alive=False))
             return None
-        body = await asyncio.wait_for(reader.readexactly(length), 15) if length else b""
-        path = urlsplit(target).path or "/"
+        if upload:
+            body = None
+        else:
+            body = await asyncio.wait_for(reader.readexactly(length), 15) if length else b""
         tls = writer.get_extra_info("sslcontext") is not None
-        return Request(method.upper(), path, headers, body, remote, tls)
+        request = Request(method.upper(), path, headers, body, remote, tls, url.query)
+        request.length = length
+        return request
+
+    # --- 文件上传 / 下载 ---
+    #   POST /api/files/<房间>                    开始一个上传，返回文件号
+    #   PUT  /api/files/<房间>/<文件>?offset=N    追加一块（断了可以从 offset 接着传）
+    #   POST /api/files/<房间>/<文件>/done        传完了
+    #   POST /api/files/<房间>/<文件>/cancel      不传了
+    #   GET  /api/files/<房间>/<文件>             下载，支持 Range
+    # 知道房间号（也就是知道密钥）的人才能用；文件内容是浏览器加密过的，服务器看不懂。
+
+    async def files(self, request, reader, writer):
+        """处理文件请求并自己写回应；返回 False 表示这条连接不能再用了。"""
+        hub = self.hub
+        if not self.same_origin(request):
+            raise HTTPError(403, "bad origin")
+        parts = request.path.split("/")[3:]
+        if not parts or not ROOM_ID.match(parts[0]) or not hub.room(parts[0]):
+            raise HTTPError(404, "房间不存在")
+        rid = parts[0]
+        method = request.method
+
+        def reply(resp):
+            writer.write(encode_response(resp, method == "HEAD"))
+
+        if len(parts) == 1 and method == "POST":
+            if self.free_mb() < MIN_FREE_MB:
+                raise HTTPError(507, "服务器硬盘空间不够了，暂时不能发文件")
+            if hub.db.execute("SELECT COUNT(*) FROM files WHERE room=? AND done=0", (rid,)).fetchone()[0] >= 20:
+                raise HTTPError(429, "同时上传的文件太多了，等一会儿")
+            fid = secrets.token_hex(16)
+            os.makedirs(os.path.dirname(hub.file_path(rid, fid)), exist_ok=True)
+            open(hub.file_path(rid, fid), "wb").close()
+            now = time.time()
+            hub.db.execute("INSERT INTO files (id, room, created, updated) VALUES (?,?,?,?)", (fid, rid, now, now))
+            reply(json_response({"id": fid}))
+            return True
+
+        if len(parts) < 2 or not FILE_ID.match(parts[1]):
+            raise HTTPError(404, "没有这个文件")
+        fid = parts[1]
+        row = hub.db.execute("SELECT size, done FROM files WHERE id=? AND room=?", (fid, rid)).fetchone()
+        if not row:
+            raise HTTPError(404, "文件不存在或已被清理")
+        size, done = row
+        path = hub.file_path(rid, fid)
+
+        if len(parts) == 2 and method == "PUT":
+            if done:
+                raise HTTPError(409, "文件已经传完了")
+            if request.query.get("offset") != str(size):
+                # 位置对不上（比如断线重传）：告诉浏览器从哪接着传。这一块的数据不要了
+                await self.discard(reader, request.length)
+                reply(json_response({"size": size}, 409))
+                return True
+            if self.free_mb() < MIN_FREE_MB // 3:
+                raise HTTPError(507, "服务器硬盘空间不够了")
+            left = request.length
+            with open(path, "r+b") as f:
+                f.seek(size)
+                try:
+                    while left:
+                        data = await asyncio.wait_for(reader.read(min(65536, left)), 30)
+                        if not data:
+                            raise ConnectionError("upload cut off")
+                        f.write(data)
+                        left -= len(data)
+                except BaseException:
+                    f.truncate(size)  # 只收到半块：退回去，下次从原位置接着传
+                    raise
+            hub.db.execute("UPDATE files SET size=?, updated=? WHERE id=?", (size + request.length, time.time(), fid))
+            reply(json_response({"size": size + request.length}))
+            return True
+
+        if len(parts) == 3 and method == "POST" and parts[2] in ("done", "cancel"):
+            if parts[2] == "done":
+                hub.db.execute("UPDATE files SET done=1, updated=? WHERE id=?", (time.time(), fid))
+            elif not done:
+                hub.delete_file(rid, fid)
+            reply(json_response({"ok": True}))
+            return True
+
+        if len(parts) == 2 and method in ("GET", "HEAD"):
+            if not done:
+                raise HTTPError(404, "文件还没传完")
+            start, end = 0, size - 1
+            status = 200
+            m = re.match(r"^bytes=(\d+)-(\d*)$", request.headers.get("range", ""))
+            if m and size:
+                start = int(m.group(1))
+                end = min(int(m.group(2)) if m.group(2) else size - 1, size - 1)
+                if start > end:
+                    raise HTTPError(416, "范围不对")
+                status = 206
+            headers = {"Cache-Control": "private, no-store", "Accept-Ranges": "bytes"}
+            if status == 206:
+                headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+            writer.write(encode_response(Response(b"", status, "application/octet-stream", headers), True,
+                                         length=end - start + 1 if size else 0))
+            if method == "GET" and size:
+                with open(path, "rb") as f:
+                    f.seek(start)
+                    left = end - start + 1
+                    while left:
+                        data = f.read(min(65536, left))
+                        if not data:
+                            break
+                        writer.write(data)
+                        left -= len(data)
+                        await asyncio.wait_for(writer.drain(), 60)
+            return True
+
+        raise HTTPError(404, "没有这个页面")
+
+    @staticmethod
+    async def discard(reader, n):
+        while n > 0:
+            data = await asyncio.wait_for(reader.read(min(65536, n)), 30)
+            if not data:
+                raise ConnectionError("cut off")
+            n -= len(data)
+
+    @staticmethod
+    def free_mb():
+        try:
+            return shutil.disk_usage(DATA_DIR).free // (1024 * 1024)
+        except OSError:
+            return 1 << 30
 
     async def websocket(self, request, reader, writer):
         key = request.headers.get("sec-websocket-key", "")
@@ -722,7 +1014,7 @@ class App:
                     hub.online.setdefault(rid, set()).add(ws)
                     await send({
                         "t": "joined", "created": token is not None, "token": token,
-                        "creator": creator, "admin": admin, "destroyAt": row[4],
+                        "creator": creator, "admin": admin, **hub.timer_info(row),
                         "online": len(hub.online[rid]), "limit": row[5],
                         "history": hub.history(rid), "now": time.time(),
                     })
@@ -743,8 +1035,13 @@ class App:
                     if bucket < 1:
                         await send({"t": "error", "error": "发得太快了，歇一下"})
                         continue
+                    fid = data.get("file")
+                    if fid is not None and not (isinstance(fid, str) and FILE_ID.match(fid) and hub.db.execute(
+                            "SELECT 1 FROM files WHERE id=? AND room=? AND done=1", (fid, rid)).fetchone()):
+                        await send({"t": "error", "error": "文件不存在或还没传完"})
+                        continue
                     bucket -= 1
-                    item = hub.add_message(rid, body)
+                    item = hub.add_message(rid, body, fid)
                     await hub.broadcast(rid, {"t": "msg", **item})
                 elif kind == "typing":
                     await hub.broadcast(rid, {"t": "typing"}, skip=ws)
@@ -829,9 +1126,17 @@ async def main():
             pass
 
     async def sweeper():
+        rounds = 0
         while True:
             try:
                 await app.hub.sweep()
+                rounds += 1
+                if rounds >= 120:  # 每 10 分钟：清理文件垃圾、WAL 临时文件
+                    app.hub.sweep_files()
+                    app.hub.compact()
+                    rounds = 0
+                elif app.hub.dirty:  # 删过东西就把空间还给硬盘
+                    app.hub.compact()
             except Exception:
                 log.exception("清理房间出错")
             await asyncio.sleep(5)
