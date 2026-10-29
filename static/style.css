@@ -672,3 +672,11 @@ audio.att-media{background:none;width:260px}
 .lb-bar button{height:36px;min-width:36px;padding:0 12px;border:0;border-radius:999px;display:inline-flex;align-items:center;justify-content:center;gap:6px;background:rgba(255,255,255,.14);color:#fff;font-size:13px;font-weight:650}
 .lb-bar button:focus-visible{outline:2px solid #fff;outline-offset:2px}
 .policy-note{margin-top:10px;padding:9px 12px;border-radius:12px;background:var(--ux-accent-soft);color:var(--ux-accent)}
+.policy.creation.on{box-shadow:0 0 0 1px var(--ux-line);background:var(--ux-surface)}
+.policy.creation.on .policy-tx b em{background:color-mix(in srgb,var(--ux-mint) 16%,transparent);color:var(--ux-mint)}
+.policy.creation.closed{box-shadow:0 0 0 1.5px #E11D48;background:color-mix(in srgb,#E11D48 5%,var(--ux-surface))}
+.policy.creation.closed .policy-ic{background:color-mix(in srgb,#E11D48 12%,transparent);color:#E11D48}
+.policy.creation.closed .policy-tx b em{background:#E11D48;color:#fff}
+.join-note{margin:-10px 0 18px;padding:10px 12px;border-radius:12px;background:color-mix(in srgb,#E11D48 8%,var(--ux-surface));color:#BE123C;font-size:12.5px;line-height:1.5;font-weight:650}
+:root[data-theme="dark"] .join-note{color:#FB7185}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .join-note{color:#FB7185}}

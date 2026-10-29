@@ -90,7 +90,7 @@
   document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && openBox && !document.querySelector('.u269.is-m')) closeAll(); });
 
   /* ---------- 房间列表 ---------- */
-  var poll = 0, rooms = [], policy = { hours: null, since: null }, skew = 0, selected = {};
+  var poll = 0, rooms = [], policy = { hours: null, since: null }, creation = { open: true, closeAt: null }, skew = 0, selected = {};
   function now() { return Date.now() / 1000 + skew; }
   async function load() {
     try {
@@ -98,6 +98,7 @@
       skew = res.data.now - Date.now() / 1000;
       rooms = res.data.rooms;
       policy = res.data.policy || policy;
+      creation = res.data.creation || creation;
       var alive = {};
       rooms.forEach(function (r) { if (selected[r.id]) alive[r.id] = 1; });
       selected = alive;
@@ -118,6 +119,7 @@
     $('stats').innerHTML = '<span>房间 <b>' + rooms.length + '</b></span><span>在线 <b>' + online + '</b> 人</span><span>倒计时中 <b>' + timed + '</b></span>' +
       (storage ? '<span>文件占用 <b>' + UI.fmtBytes(storage.files) + '</b></span><span>数据库 <b>' + UI.fmtBytes(storage.db) + '</b></span><span>硬盘剩余 <b>' + UI.fmtBytes(storage.freeMb * 1048576) + '</b></span>' : '');
     renderPolicy();
+    renderCreation();
     var box = $('rooms');
     if (!rooms.length) { box.innerHTML = '<p class="rooms-empty">还没有房间</p>'; renderBatch(); return; }
     box.innerHTML = rooms.map(function (r) {
@@ -157,6 +159,7 @@
   setInterval(function () {
     document.querySelectorAll('[data-left]').forEach(function (el) { el.textContent = UI.fmtLeft(+el.getAttribute('data-left') - now()); });
     if (current) drawTimer();
+    if (creation.closeAt) renderCreation();
   }, 1000);
 
   /* ---------- 批量操作 ---------- */
@@ -240,6 +243,39 @@
     setPolicy(policyHours.value, '已开启全局自动销毁：所有房间最长 ' + policyHours.value + ' 小时');
   });
   $('policy-off').addEventListener('click', function () { setPolicy(null, '已关闭全局自动销毁'); });
+
+  /* ---------- 新建房间开关 ---------- */
+  function renderCreation() {
+    var open = creation.open, timed = open && creation.closeAt;
+    var left = timed ? UI.fmtLeft(Math.max(0, creation.closeAt - now())) : '';
+    $('creation').classList.toggle('on', open);
+    $('creation').classList.toggle('closed', !open);
+    $('creation-state').textContent = !open ? '已关闭' : timed ? '限时开放 · 剩 ' + left : '开放中';
+    $('creation-text').textContent = !open ? '现在别人建不了新房间，只能用已有房间的密钥进入。'
+      : timed ? '任何人输入新的密钥都能建房间，' + left + ' 后自动关闭。' : '任何人输入新的密钥都能建房间。';
+    $('creation-now-text').textContent = !open ? '现在：已关闭' : timed ? '现在：限时开放，' + left + ' 后自动关闭' : '现在：一直开放';
+    $('creation-timed').textContent = '开放 ' + creationHours.value + ' 小时，到点自动关闭';
+    $('creation-forever').disabled = open && !timed;
+    $('creation-close').disabled = !open;
+  }
+  var creationHours = UI.hourSlider($('creation-hours'), function () { if (creationHours) renderCreation(); },  // 第一次回调时还没赋值
+    { min: 1, max: 168, value: 6, ticks: [1, 24, 72, 120, 168], page: 12 });
+  async function setCreation(open, hrs, okText) {
+    try {
+      var res = await api('/api/admin/creation', { open: open, hours: hrs });
+      if (!res.ok) throw new Error(res.data.error || '操作失败');
+      creation = res.data.creation;
+      UI.toast(open ? 'ok' : 'warn', okText);
+      closeAll();
+      renderCreation();
+    } catch (e) { UI.toast('err', '操作失败', e.message); }
+  }
+  $('creation-open').addEventListener('click', function () { renderCreation(); openPanel($('creation-sheet')); });
+  $('creation-timed').addEventListener('click', function () {
+    setCreation(true, creationHours.value, '已开放新建房间，' + creationHours.value + ' 小时后自动关闭');
+  });
+  $('creation-forever').addEventListener('click', function () { setCreation(true, null, '已开放新建房间'); });
+  $('creation-close').addEventListener('click', function () { setCreation(false, null, '已关闭新建房间'); });
 
   /* ---------- 管理单个房间 ---------- */
   var current = null;

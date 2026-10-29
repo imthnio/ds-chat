@@ -382,6 +382,19 @@ class Hub:
         conf = dict(db.execute("SELECT k, v FROM settings"))
         self.policy_hours = int(conf["policy_hours"]) if conf.get("policy_hours") else None
         self.policy_since = float(conf.get("policy_since") or 0)
+        # 新建房间开关：关闭时只能进已有的房间（管理员除外）；开放时可以设一个自动关闭的时间
+        self.create_open = conf.get("create_open", "1") == "1"
+        self.create_close_at = float(conf["create_close_at"]) if conf.get("create_close_at") else None
+
+    def set_creation(self, open_, close_at):
+        self.create_open = open_
+        self.create_close_at = close_at if open_ else None
+        self.db.execute("INSERT OR REPLACE INTO settings (k, v) VALUES ('create_open', ?)", ("1" if open_ else "0",))
+        self.db.execute("INSERT OR REPLACE INTO settings (k, v) VALUES ('create_close_at', ?)",
+                        (str(self.create_close_at) if self.create_close_at else "",))
+
+    def creation_info(self):
+        return {"open": self.create_open, "closeAt": self.create_close_at}
 
     # --- 全局自动销毁：所有房间（含以后新开的）最多活 policy_hours 小时。
     #     开启前就有的房间从开启时算起，之后新开的从创建时算起。
@@ -533,6 +546,8 @@ class Hub:
             "SELECT id FROM rooms WHERE destroy_at IS NOT NULL AND destroy_at <= ?", (now,))]
         for rid in due:
             await self.destroy(rid, "timer")
+        if self.create_open and self.create_close_at and self.create_close_at <= now:
+            self.set_creation(False, None)  # 限时开放到点了
         if self.policy_hours:
             due = [r for (r,) in self.db.execute(
                 "SELECT id FROM rooms WHERE MAX(created, ?) <= ?",
@@ -615,6 +630,8 @@ class App:
                 return self.static.serve(request, "admin.html")
             if path.startswith("/static/"):
                 return self.static.serve(request, path[len("/static/"):])
+            if path == "/api/status":
+                return json_response({"creation": self.hub.creation_info()})
             if path == "/api/admin/me":
                 return json_response({"admin": self.is_admin(request)})
             if path == "/api/admin/rooms":
@@ -631,6 +648,9 @@ class App:
             if path == "/api/admin/rooms/batch":
                 self.need_admin(request)
                 return await self.admin_batch(request.json())
+            if path == "/api/admin/creation":
+                self.need_admin(request)
+                return self.admin_creation(request.json())
             if path == "/api/admin/policy":
                 self.need_admin(request)
                 return await self.admin_policy(request.json())
@@ -679,6 +699,7 @@ class App:
         return json_response({
             "now": time.time(),
             "policy": {"hours": hub.policy_hours, "since": hub.policy_since if hub.policy_hours else None},
+            "creation": hub.creation_info(),
             "storage": {"files": sum(r[7] for r in rows), "db": db_bytes, "freeMb": self.free_mb()},
             "rooms": [{
                 "id": rid, "code": rid[:6].upper(), "created": created, "lastActive": active,
@@ -699,6 +720,15 @@ class App:
             if await self.hub.set_timer(rid, hours, "admin"):
                 done += 1
         return json_response({"ok": True, "done": done})
+
+    def admin_creation(self, body):
+        """{"open": true, "hours": 6} 开放 6 小时后自动关闭；{"open": true} 一直开放；{"open": false} 关闭。"""
+        open_, hours = body.get("open"), body.get("hours")
+        if not isinstance(open_, bool) or (hours is not None and not (
+                isinstance(hours, int) and not isinstance(hours, bool) and 1 <= hours <= MAX_POLICY_HOURS)):
+            raise HTTPError(400, "参数不对")
+        self.hub.set_creation(open_, time.time() + hours * 3600 if open_ and hours else None)
+        return json_response({"ok": True, "creation": self.hub.creation_info()})
 
     async def admin_policy(self, body):
         hours = body.get("hours")
@@ -995,6 +1025,9 @@ class App:
                         await send({"t": "gone"})
                         break
                     if row is None:
+                        if not hub.create_open and not admin:
+                            await send({"t": "error", "error": "管理员暂时关闭了新建房间，现在只能用已有房间的密钥进入"})
+                            break
                         if hub.db.execute("SELECT COUNT(*) FROM rooms").fetchone()[0] >= MAX_ROOMS:
                             await send({"t": "error", "error": "服务器上的房间太多了，请稍后再试"})
                             break
