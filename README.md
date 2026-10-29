@@ -20,25 +20,20 @@ curl -fsSL https://raw.githubusercontent.com/imthnio/ds-chat/main/install.sh | b
 
 > 没填域名时，浏览器第一次打开会提示“不安全 / 不是私密连接”，点 **高级 → 继续访问** 就行，消息照样是加密的。
 
-支持 Debian / Ubuntu / CentOS / Alpine，64 MB 内存的小鸡也能跑，不需要 nginx，也不用装别的。
+支持 Debian / Ubuntu / CentOS / Alpine，Python 3.6～3.14 都能跑，64 MB 内存的小鸡也行，不需要 nginx，也不用装别的。
 
 ### 更新、改设置、卸载
 
-都是同一行命令，末尾加不同的词：
+还是运行上面那一行命令。已经装过的服务器会弹出菜单：
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/imthnio/ds-chat/main/install.sh | bash
 ```
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/imthnio/ds-chat/main/install.sh | bash -s reconfig
+1) 更新到最新版（设置和聊天记录都保留）    ← 直接回车就是这个
+2) 修改设置（域名 / 端口 / 管理员密码）
+3) 查看地址和管理员密码
+4) 重启服务
+5) 卸载
+0) 退出
 ```
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/imthnio/ds-chat/main/install.sh | bash -s uninstall
-```
-
-第一行是更新到最新版（设置和聊天记录都保留），第二行是重新设置域名 / 端口 / 密码，第三行是卸载（会问要不要删聊天记录）。
 
 ## 功能
 

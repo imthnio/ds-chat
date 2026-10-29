@@ -820,7 +820,9 @@ async def main():
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
-    loop = asyncio.get_event_loop()  # 不用 asyncio.run：老系统自带的 Python 3.6 没有它
+    # 自己建事件循环：Python 3.6 没有 asyncio.run，3.14 又不再自动创建循环，这样写新老版本都能跑
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     try:
         loop.run_until_complete(main())
     except KeyboardInterrupt:
