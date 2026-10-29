@@ -10,11 +10,12 @@
 curl -fsSL https://raw.githubusercontent.com/imthnio/ds-chat/main/install.sh | bash
 ```
 
-它会问三个问题，不懂就一路回车：
+它会问几个问题，不懂就一路回车：
 
-1. **域名**：有域名（已经解析到这台服务器）就填上，会自动申请免费证书；没有就直接回车，用 IP 访问。
-2. **端口**：默认 443。NAT 小鸡填商家分配给你的端口。
-3. **管理员密码**：回车就自动生成一个。
+1. **是否通过 Cloudflare 访问**：域名挂了 Cloudflare（小云朵是橙色）就选 y，见下面“挂 Cloudflare”。
+2. **域名**：有域名（已经解析到这台服务器）就填上，会自动申请免费证书；没有就直接回车，用 IP 访问。
+3. **端口**：默认 443。NAT 小鸡填商家分配给你的端口。
+4. **管理员密码**：回车就自动生成一个。
 
 装完会显示聊天地址、管理后台地址和管理员密码。
 
@@ -34,6 +35,16 @@ curl -fsSL https://raw.githubusercontent.com/imthnio/ds-chat/main/install.sh | b
 5) 卸载
 0) 退出
 ```
+
+### 挂 Cloudflare
+
+安装时“通过 Cloudflare 访问”选 y，填上域名。装完后在 Cloudflare 后台设置这几处（装完屏幕上也会提示）：
+
+1. **DNS**：添加 A 记录，域名指向服务器 IP，小云朵点成橙色。
+2. **SSL/TLS 加密模式选“完全 (Full)”**。不要选“灵活”（会打不开），也不要选“完全（严格）”。
+3. **端口不是 443 时**：规则 → Origin Rules → 新建规则，主机名等于你的域名时，目标端口改写为你的端口（免费版就能用）。
+
+之后大家直接打开 `https://你的域名`，不用带端口，也不会再有“不安全”提示。服务器会从 Cloudflare 转发的请求里读出访问者的真实 IP（只认真正来自 Cloudflare 的请求）。
 
 ## 功能
 
@@ -63,6 +74,7 @@ curl -fsSL https://raw.githubusercontent.com/imthnio/ds-chat/main/install.sh | b
 | `ADMIN_PASSWORD` | 自动生成 | 管理员密码（不设就保存在 `data/admin_password.txt`） |
 | `DATA_DIR` | `./data` | 数据放哪 |
 | `TRUST_PROXY` | 关 | 放在 nginx 等反向代理后面时设 `1` |
+| `CLOUDFLARE` | 关 | 挂在 Cloudflare 后面时设 `1`，读取访问者真实 IP |
 | `ROOM_IDLE_DAYS` | `30` | 多少天没人进出的房间自动清掉，`0` = 永不 |
 | `MAX_CONN` | `200` | 同时最多多少个连接 |
 

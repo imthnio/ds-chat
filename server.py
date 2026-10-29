@@ -18,6 +18,7 @@ import gzip
 import hashlib
 import hmac
 import http
+import ipaddress
 import json
 import logging
 import os
@@ -35,6 +36,7 @@ HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8080"))
 DATA_DIR = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 TRUST_PROXY = os.environ.get("TRUST_PROXY", "") == "1"  # 在 nginx 等反向代理后面时打开，才认 X-Forwarded-* 头
+CLOUDFLARE = os.environ.get("CLOUDFLARE", "") == "1"    # 挂在 Cloudflare 后面时打开，从 CF-Connecting-IP 读访问者真实 IP
 IDLE_DAYS = float(os.environ.get("ROOM_IDLE_DAYS", "30"))  # 没人进出这么多天的房间自动清掉，0 = 永不
 CERT_FILE = os.environ.get("CERT_FILE", "")  # 证书和私钥都设了就直接用 HTTPS
 KEY_FILE = os.environ.get("KEY_FILE", "")
@@ -50,6 +52,26 @@ MAX_ROOMS = 20_000
 MAX_BODY = 64 * 1024   # HTTP 请求体和 WebSocket 单条消息的上限
 ADMIN_TTL = 12 * 3600
 ROOM_ID = re.compile(r"^[0-9a-f]{64}$")
+
+# Cloudflare 的服务器网段（https://www.cloudflare.com/ips/）。只有从这些地址来的请求，
+# 才相信它带的 CF-Connecting-IP；否则谁都能直连服务器、伪造 IP 绕过登录次数限制。
+CF_NETS = [ipaddress.ip_network(n) for n in (
+    "173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22", "141.101.64.0/18",
+    "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20", "197.234.240.0/22", "198.41.128.0/17",
+    "162.158.0.0/15", "104.16.0.0/13", "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",
+    "2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32", "2405:8100::/32",
+    "2a06:98c0::/29", "2c0f:f248::/32",
+)]
+
+
+def from_cloudflare(ip):
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    if getattr(addr, "ipv4_mapped", None):
+        addr = addr.ipv4_mapped
+    return any(addr in net for net in CF_NETS)
 
 log = logging.getLogger("ds-chat")
 
@@ -438,6 +460,10 @@ class App:
     # --- 工具 ---
 
     def client_ip(self, request):
+        if CLOUDFLARE and from_cloudflare(request.remote):
+            real = request.headers.get("cf-connecting-ip", "").strip()
+            if real:
+                return real
         if TRUST_PROXY:
             fwd = request.headers.get("x-forwarded-for", "")
             if fwd:
