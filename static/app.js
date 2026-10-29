@@ -269,7 +269,14 @@
     document.title = 'ds-chat 密钥聊天室';
     $('log').innerHTML = ''; $('msg').value = ''; sendState();
     info.destroyAt = info.own = info.policyAt = null; renderTimer();
+    checkCreation();
     keyIn.focus({ preventScroll: true });
+  }
+  // 管理员关闭了新建房间时，在输入密钥的卡片上先提示一下
+  function checkCreation() {
+    fetch('/api/status').then(function (r) { return r.json(); }).then(function (d) {
+      $('join-note').hidden = !(d.creation && d.creation.open === false);
+    }, function () {});
   }
 
   /* ---------- 状态 ---------- */
@@ -684,5 +691,6 @@
   });
 
   meterUpdate();
+  checkCreation();
   keyIn.focus({ preventScroll: true });
 })();

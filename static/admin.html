@@ -53,6 +53,12 @@
       <button class="btn dark" type="button" id="policy-open">设置</button>
     </section>
 
+    <section class="policy creation" id="creation">
+      <span class="policy-ic" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3.5" y="4" width="17" height="16" rx="3"/><path d="M12 8.5v7M8.5 12h7"/></svg></span>
+      <div class="policy-tx"><b>新建房间 <em id="creation-state">开放中</em></b><span id="creation-text">任何人输入新的密钥都能建房间。</span></div>
+      <button class="btn dark" type="button" id="creation-open">设置</button>
+    </section>
+
     <div class="admin-stats" id="stats"></div>
 
     <div class="batch" id="batch">
@@ -154,6 +160,32 @@
         <div class="u017-ticks" aria-hidden="true"></div>
       </div>
       <div class="sheet-row"><button class="btn dark" type="button" id="policy-go"></button></div>
+    </div>
+    <button class="btn ghost" type="button" data-close>关闭</button>
+  </section>
+</div>
+
+<!-- 新建房间开关 -->
+<div class="admin-sheet" id="creation-sheet">
+  <div class="sheet-dim" aria-hidden="true"></div>
+  <section class="sheet" role="dialog" aria-modal="true" aria-labelledby="creation-title">
+    <span class="sheet-grip" aria-hidden="true"></span>
+    <h4 id="creation-title">新建房间</h4>
+    <p class="sheet-meta">关闭后，别人输入新的密钥建不了房间，只能用已有房间的密钥进入；已有的房间照常聊天。管理员登录后不受限制。</p>
+    <div class="sheet-sec">
+      <div class="timer-now" id="creation-now"><span id="creation-now-text"></span></div>
+      <!-- Lucian UX/UI Prompt #017 · MIT License (c) 2026 Seokwoooo · https://lucianlabs.dev/uxui-prompt/#017 -->
+      <div class="ux u017 hours" id="creation-hours" style="--v:.0299">
+        <div class="u017-head"><b>限时开放多久</b><span>1～168 小时（一周）</span></div>
+        <div class="u017-track">
+          <span class="u017-fill" aria-hidden="true"></span>
+          <span class="u017-bub" aria-hidden="true"><span class="u017-val">6 小时</span></span>
+          <span class="u017-thumb" role="slider" tabindex="0" aria-label="开放几小时后自动关闭" aria-valuenow="6" aria-valuetext="6 小时"></span>
+        </div>
+        <div class="u017-ticks" aria-hidden="true"></div>
+      </div>
+      <div class="sheet-row"><button class="btn dark" type="button" id="creation-timed"></button></div>
+      <div class="sheet-row"><button class="btn soft" type="button" id="creation-forever">一直开放</button><button class="btn danger" type="button" id="creation-close" style="flex:1">立即关闭</button></div>
     </div>
     <button class="btn ghost" type="button" data-close>关闭</button>
   </section>
