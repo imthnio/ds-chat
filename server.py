@@ -7,9 +7,10 @@
 或者设一个 1～12 小时的倒计时，到点自动销毁（房间和全部消息一起删除）。
 每个房间最多 7 人（含创建者，创建者的位置一直保留），创建者和管理员可以调成 2～7 人。
 
-只用 Python 标准库（3.7 及以上），不用装任何依赖，64 MB 内存的小机器也能跑：
+只用 Python 标准库（3.6 及以上），不用装任何依赖，64 MB 内存的小机器也能跑：
     python3 server.py
-设置项见 README（环境变量）。
+设了 CERT_FILE 和 KEY_FILE 就直接提供 HTTPS，不需要 nginx。
+在服务器上安装用 install.sh（一键），设置项见 README。
 """
 import asyncio
 import base64
@@ -24,6 +25,7 @@ import re
 import secrets
 import signal
 import sqlite3
+import ssl
 import struct
 import time
 from http.cookies import SimpleCookie
@@ -34,6 +36,8 @@ PORT = int(os.environ.get("PORT", "8080"))
 DATA_DIR = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 TRUST_PROXY = os.environ.get("TRUST_PROXY", "") == "1"  # 在 nginx 等反向代理后面时打开，才认 X-Forwarded-* 头
 IDLE_DAYS = float(os.environ.get("ROOM_IDLE_DAYS", "30"))  # 没人进出这么多天的房间自动清掉，0 = 永不
+CERT_FILE = os.environ.get("CERT_FILE", "")  # 证书和私钥都设了就直接用 HTTPS
+KEY_FILE = os.environ.get("KEY_FILE", "")
 MAX_CONN = int(os.environ.get("MAX_CONN", "200"))  # 同时最多多少个连接，防止小机器被挤爆
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
@@ -111,7 +115,8 @@ class HTTPError(Exception):
 
 
 class Request:
-    def __init__(self, method, path, headers, body, remote):
+    def __init__(self, method, path, headers, body, remote, tls=False):
+        self.tls = tls
         self.method = method
         self.path = path
         self.headers = headers  # 键都是小写
@@ -130,7 +135,7 @@ class Request:
 
     @property
     def secure(self):
-        return TRUST_PROXY and self.headers.get("x-forwarded-proto") == "https"
+        return self.tls or (TRUST_PROXY and self.headers.get("x-forwarded-proto") == "https")
 
     def json(self):
         try:
@@ -610,7 +615,8 @@ class App:
             return None
         body = await asyncio.wait_for(reader.readexactly(length), 15) if length else b""
         path = urlsplit(target).path or "/"
-        return Request(method.upper(), path, headers, body, remote)
+        tls = writer.get_extra_info("sslcontext") is not None
+        return Request(method.upper(), path, headers, body, remote, tls)
 
     async def websocket(self, request, reader, writer):
         key = request.headers.get("sec-websocket-key", "")
@@ -764,13 +770,32 @@ def parse_limit(value):
     return None
 
 
+def tls_context():
+    if not (CERT_FILE and KEY_FILE):
+        return None
+    ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    ctx.load_cert_chain(CERT_FILE, KEY_FILE)
+    return ctx
+
+
 async def main():
     app = App()
-    server = await asyncio.start_server(app.handle, HOST, PORT, limit=MAX_BODY + 1024)
-    log.info("ds-chat 启动：http://%s:%d", "localhost" if HOST in ("0.0.0.0", "::") else HOST, PORT)
+    ctx = tls_context()
+    loop = asyncio.get_event_loop()
+
+    def quiet(loop, context):
+        # 扫描器、证书不被信任的浏览器会让 TLS 握手失败，这些不值得写进日志
+        exc = context.get("exception")
+        if isinstance(exc, (ssl.SSLError, ConnectionError, OSError)):
+            return
+        loop.default_exception_handler(context)
+
+    loop.set_exception_handler(quiet)
+    server = await asyncio.start_server(app.handle, HOST, PORT, limit=MAX_BODY + 1024, ssl=ctx)
+    log.info("ds-chat 启动：%s://%s:%d", "https" if ctx else "http",
+             "localhost" if HOST in ("0.0.0.0", "::") else HOST, PORT)
 
     stop = asyncio.Event()
-    loop = asyncio.get_event_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             loop.add_signal_handler(sig, stop.set)
@@ -795,7 +820,10 @@ async def main():
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+    loop = asyncio.get_event_loop()  # 不用 asyncio.run：老系统自带的 Python 3.6 没有它
     try:
-        asyncio.run(main())
+        loop.run_until_complete(main())
     except KeyboardInterrupt:
         pass
+    finally:
+        loop.close()
