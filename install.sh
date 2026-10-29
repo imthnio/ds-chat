@@ -3,8 +3,9 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/imthnio/ds-chat/main/install.sh | bash
 #
-# 第一次运行：安装，会问域名（可以不填）、端口、管理员密码。
-#   有域名就自动申请免费证书；没有就生成自签名证书，用 IP 访问。
+# 第一次运行：安装，会问是否用 Cloudflare、域名（可以不填）、端口、管理员密码。
+#   有域名就自动申请免费证书；没有就生成自签名证书，用 IP 访问；
+#   用 Cloudflare 时服务器用自签名证书，Cloudflare 后台 SSL 选 Full。
 # 已经装过再运行：弹出菜单（直接回车 = 更新到最新版），可以改设置、查看密码、重启、卸载。
 #   设置和聊天记录在更新时都保留。
 set -e
@@ -155,20 +156,36 @@ setup_user() {
 
 # ---------- 设置：域名、端口、密码、证书 ----------
 configure() {
-    local old_port old_pass cert_ok="" ip
+    local old_port old_pass old_domain cert_ok="" ip
+    old_domain=$(conf_get DOMAIN)
     echo
     blue "==> 回答几个问题（直接回车 = 用括号里的默认值）"
-    echo "    有域名并且已经解析到这台服务器，就输入域名，会自动申请免费证书。"
-    echo "    没有域名直接回车，用 IP 访问（浏览器第一次会提示不安全，点“继续访问”即可）。"
-    local old_domain
-    old_domain=$(conf_get DOMAIN)
-    if [ -n "$old_domain" ]; then
-        DOMAIN=$(ask "    域名 [$old_domain，输入 - 改为不用域名]: " "$old_domain")
-        [ "$DOMAIN" = "-" ] && DOMAIN=""
+    echo "    域名开了 Cloudflare 代理（小云朵是橙色）就选 y；不知道是什么就直接回车。"
+    if [ "$(conf_get CLOUDFLARE)" = 1 ]; then
+        CF=$(ask "    通过 Cloudflare 访问吗？[Y/n]: " y)
     else
-        DOMAIN=$(ask "    域名（可不填）: " "")
+        CF=$(ask "    通过 Cloudflare 访问吗？[y/N]: " n)
+    fi
+    case "$CF" in y|Y|yes|YES) CF=1 ;; *) CF=0 ;; esac
+    echo
+    if [ $CF = 1 ]; then
+        if [ -n "$old_domain" ]; then
+            DOMAIN=$(ask "    域名（已在 Cloudflare 添加）[$old_domain]: " "$old_domain")
+        else
+            DOMAIN=$(ask "    域名（已在 Cloudflare 添加）: " "")
+        fi
+    else
+        echo "    有域名并且已经解析到这台服务器，就输入域名，会自动申请免费证书。"
+        echo "    没有域名直接回车，用 IP 访问（浏览器第一次会提示不安全，点“继续访问”即可）。"
+        if [ -n "$old_domain" ]; then
+            DOMAIN=$(ask "    域名 [$old_domain，输入 - 改为不用域名]: " "$old_domain")
+            [ "$DOMAIN" = "-" ] && DOMAIN=""
+        else
+            DOMAIN=$(ask "    域名（可不填）: " "")
+        fi
     fi
     DOMAIN=$(echo "$DOMAIN" | tr -d ' ' | sed 's#^https\?://##; s#/.*##')
+    if [ $CF = 1 ] && [ -z "$DOMAIN" ]; then die "用 Cloudflare 必须填域名"; fi
     echo
     echo "    NAT 小鸡只能用商家分配的端口，就填分配给你的端口。"
     old_port=$(conf_get PORT)
@@ -185,7 +202,8 @@ configure() {
     case "$PASS" in *[!A-Za-z0-9_@%+=.,:-]*) die "密码只能用字母、数字和 _@%+=.,:- 这些符号" ;; esac
     [ ${#PASS} -ge 8 ] || die "管理员密码至少 8 位"
 
-    if [ -n "$DOMAIN" ]; then
+    # 用 Cloudflare 时浏览器看到的是 Cloudflare 的证书，服务器这边自签名就够了（后台 SSL 选 Full）
+    if [ -n "$DOMAIN" ] && [ $CF = 0 ]; then
         blue "==> 为 $DOMAIN 申请免费证书（Let's Encrypt）"
         echo "    需要这台服务器的 80 端口能从外网访问，并且没有被别的程序占用。"
         pkg_install socat >/dev/null 2>&1 || true
@@ -235,6 +253,7 @@ DATA_DIR=$DATA_DIR
 CERT_FILE=$CONF_DIR/cert.pem
 KEY_FILE=$CONF_DIR/key.pem
 DOMAIN=$DOMAIN
+CLOUDFLARE=$CF
 CONF
     chmod 600 "$CONF"
     if [ $RUN_USER != root ]; then chown $RUN_USER "$CONF"; fi
@@ -314,15 +333,25 @@ restart_and_check() {
 
 # ---------- 显示地址和密码 ----------
 show_info() {
-    local port domain host url
-    port=$(conf_get PORT); domain=$(conf_get DOMAIN)
+    local port domain host url cf ip
+    port=$(conf_get PORT); domain=$(conf_get DOMAIN); cf=$(conf_get CLOUDFLARE)
     if [ -n "$domain" ]; then host=$domain; else host=$(public_ip); host=${host:-服务器IP}; fi
-    if [ "$port" = 443 ]; then url="https://$host"; else url="https://$host:$port"; fi
+    # 走 Cloudflare 时访问者连的是 Cloudflare 的 443，地址里不用带端口
+    if [ "$port" = 443 ] || [ "$cf" = 1 ]; then url="https://$host"; else url="https://$host:$port"; fi
     echo
     echo "    聊天地址：  $url"
     echo "    管理后台：  $url/admin"
     echo "    管理员密码：$(conf_get ADMIN_PASSWORD)"
-    if [ -z "$domain" ]; then
+    if [ "$cf" = 1 ]; then
+        echo
+        yellow "    Cloudflare 后台还要设置这几处（设过就不用再管）："
+        ip=$(public_ip)
+        echo "      1. DNS：A 记录 $domain 指向 ${ip:-这台服务器的 IP}，小云朵点成橙色"
+        echo "      2. SSL/TLS 加密模式选“完全 (Full)”。不要选“灵活”或“完全（严格）”"
+        if [ "$port" != 443 ]; then
+            echo "      3. 规则 → Origin Rules → 新建规则：主机名等于 $domain 时，目标端口改写为 $port"
+        fi
+    elif [ -z "$domain" ]; then
         echo
         yellow "    用的是自签名证书：浏览器第一次打开会提示“不安全/不是私密连接”，"
         yellow "    点“高级”→“继续访问”即可，消息照样是加密的。"
@@ -363,7 +392,7 @@ if [ -z "$ACTION" ]; then
         echo
         blue "==> ds-chat 已经安装，要做什么？"
         echo "    1) 更新到最新版（设置和聊天记录都保留）"
-        echo "    2) 修改设置（域名 / 端口 / 管理员密码）"
+        echo "    2) 修改设置（Cloudflare / 域名 / 端口 / 管理员密码）"
         echo "    3) 查看地址和管理员密码"
         echo "    4) 重启服务"
         echo "    5) 卸载"
