@@ -258,21 +258,22 @@ body.in-chat .corner{display:none}
 .u078-m.drag .u078-bub{transition:none}
 .u078-m.me .u078-bub{border-radius:18px 18px 6px 18px;background:var(--ux-accent);color:var(--ux-accent-ink)}
 .u078-q{display:block;margin:-2px -4px 6px;padding:6px 8px;border-radius:10px;background:color-mix(in srgb,currentColor 12%,transparent);font-size:12px;line-height:1.35;opacity:.85;border-left:3px solid currentColor}
-.u078-rep{position:absolute;left:6px;top:50%;width:26px;height:26px;margin-top:-13px;border-radius:50%;display:grid;place-items:center;background:var(--ux-surface-2);color:var(--ux-ink-2);opacity:var(--ro,0);transform:scale(calc(.5 + var(--ro,0) * .5))}
+/* 回复箭头只是滑动手势的指示图标，不接点击：不然它会盖住自己消息左边的复制按钮（见 .u078-cp） */
+.u078-rep{position:absolute;left:6px;top:50%;width:26px;height:26px;margin-top:-13px;border-radius:50%;display:grid;place-items:center;background:var(--ux-surface-2);color:var(--ux-ink-2);opacity:var(--ro,0);transform:scale(calc(.5 + var(--ro,0) * .5));pointer-events:none}
 .u078-rep svg,.u078-rb svg,.u078-cp svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
 .u078-rep.full{background:var(--ux-accent);color:var(--ux-accent-ink)}
 .u078-rb{width:28px;height:28px;flex:none;margin:0 4px;border:0;padding:0;border-radius:50%;display:grid;place-items:center;background:none;color:var(--ux-ink-3);opacity:0;transition:opacity .2s,background-color .2s}
 .u078-m:hover .u078-rb,.u078-rb:focus-visible{opacity:1}
 .u078-rb:hover{background:var(--ux-surface-2);color:var(--ux-ink)}
 .u078-rb:focus-visible{outline:2px solid var(--ux-accent);outline-offset:1px}
-/* 一键复制：和回复按钮同款；触屏没有悬停，所以默认半透明常驻，点按时变实 */
-.u078-cp{width:28px;height:28px;flex:none;margin:0 4px;border:0;padding:0;border-radius:50%;display:grid;place-items:center;background:none;color:var(--ux-ink-3);opacity:0;transition:opacity .2s,background-color .2s}
-.u078-m:hover .u078-cp,.u078-cp:focus-visible{opacity:1}
-.u078-cp:hover{background:var(--ux-surface-2);color:var(--ux-ink)}
+/* 一键复制：常驻显示，带底色圆片，比悬停才出现的回复按钮更显眼 */
+.u078-cp{width:28px;height:28px;flex:none;margin:0 4px;border:0;padding:0;border-radius:50%;display:grid;place-items:center;background:var(--ux-surface-2);color:var(--ux-ink-2);box-shadow:0 0 0 1px var(--ux-line);transition:background-color .2s,color .2s,transform .2s}
+.u078-cp svg{width:16px;height:16px}
+.u078-cp:hover{background:var(--ux-surface-3);color:var(--ux-ink)}
 .u078-cp:focus-visible{outline:2px solid var(--ux-accent);outline-offset:1px}
-.u078-cp:active{opacity:1}
-.u078-cp.done{opacity:1;color:var(--ux-mint)}
-@media (hover:none){.u078-rb{display:none}.u078-cp{opacity:.65}}
+.u078-cp:active{transform:scale(.9)}
+.u078-cp.done{color:var(--ux-mint)}
+@media (hover:none){.u078-rb{display:none}}
 .u078-m.in{animation:u078-in .5s var(--ux-spring)}
 @keyframes u078-in{from{opacity:0;transform:translateY(16px) scale(.9)}}
 .u078-m.me.in{transform-origin:100% 100%;animation:u078-up .55s var(--ux-spring)}
