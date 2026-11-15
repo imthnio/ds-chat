@@ -259,13 +259,20 @@ body.in-chat .corner{display:none}
 .u078-m.me .u078-bub{border-radius:18px 18px 6px 18px;background:var(--ux-accent);color:var(--ux-accent-ink)}
 .u078-q{display:block;margin:-2px -4px 6px;padding:6px 8px;border-radius:10px;background:color-mix(in srgb,currentColor 12%,transparent);font-size:12px;line-height:1.35;opacity:.85;border-left:3px solid currentColor}
 .u078-rep{position:absolute;left:6px;top:50%;width:26px;height:26px;margin-top:-13px;border-radius:50%;display:grid;place-items:center;background:var(--ux-surface-2);color:var(--ux-ink-2);opacity:var(--ro,0);transform:scale(calc(.5 + var(--ro,0) * .5))}
-.u078-rep svg,.u078-rb svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+.u078-rep svg,.u078-rb svg,.u078-cp svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
 .u078-rep.full{background:var(--ux-accent);color:var(--ux-accent-ink)}
 .u078-rb{width:28px;height:28px;flex:none;margin:0 4px;border:0;padding:0;border-radius:50%;display:grid;place-items:center;background:none;color:var(--ux-ink-3);opacity:0;transition:opacity .2s,background-color .2s}
 .u078-m:hover .u078-rb,.u078-rb:focus-visible{opacity:1}
 .u078-rb:hover{background:var(--ux-surface-2);color:var(--ux-ink)}
 .u078-rb:focus-visible{outline:2px solid var(--ux-accent);outline-offset:1px}
-@media (hover:none){.u078-rb{display:none}}
+/* 一键复制：和回复按钮同款；触屏没有悬停，所以默认半透明常驻，点按时变实 */
+.u078-cp{width:28px;height:28px;flex:none;margin:0 4px;border:0;padding:0;border-radius:50%;display:grid;place-items:center;background:none;color:var(--ux-ink-3);opacity:0;transition:opacity .2s,background-color .2s}
+.u078-m:hover .u078-cp,.u078-cp:focus-visible{opacity:1}
+.u078-cp:hover{background:var(--ux-surface-2);color:var(--ux-ink)}
+.u078-cp:focus-visible{outline:2px solid var(--ux-accent);outline-offset:1px}
+.u078-cp:active{opacity:1}
+.u078-cp.done{opacity:1;color:var(--ux-mint)}
+@media (hover:none){.u078-rb{display:none}.u078-cp{opacity:.65}}
 .u078-m.in{animation:u078-in .5s var(--ux-spring)}
 @keyframes u078-in{from{opacity:0;transform:translateY(16px) scale(.9)}}
 .u078-m.me.in{transform-origin:100% 100%;animation:u078-up .55s var(--ux-spring)}
@@ -543,6 +550,8 @@ body>.u269.confirm{position:fixed;z-index:50}
 .u078.chat .u078-rep.full{background:var(--wa-blue);color:#fff}
 .u078.chat .u078-rb{color:var(--wa-meta)}
 .u078.chat .u078-rb:hover{background:var(--wa-chip);color:var(--wa-ink)}
+.u078.chat .u078-cp{color:var(--wa-meta)}
+.u078.chat .u078-cp:hover{background:var(--wa-chip);color:var(--wa-ink)}
 .u078.chat .u078-ty{margin-top:10px;background:var(--wa-them);border-radius:3px 14px 14px 14px}
 .u078.chat .u078-ty i{background:var(--wa-meta)}
 .u078.chat .u078-day{margin:12px 0 4px;padding:4px 12px;border-radius:999px;background:var(--wa-chip);font-size:12px;font-weight:500;color:var(--wa-meta)}
