@@ -134,6 +134,7 @@
     try {
       var r = await deriveRoom(key);
       r.key = key;  // 只留在这个页面的内存里；创建者的会另外存到本机（见 rememberKey）
+      stealth = isAdmin && $('stealth').checked;
       await enterRoom(r);
       go.classList.remove('busy'); go.classList.add('ok'); go.setAttribute('aria-label', '已进入');
       await new Promise(function (res) { setTimeout(res, rm() ? 0 : 550); });
@@ -150,7 +151,7 @@
   });
 
   /* ---------- 房间连接 ---------- */
-  var room = null, ws = null, me = null, info = { creator: false, admin: false, destroyAt: null, own: null, policyAt: null, online: 0, limit: 7 };
+  var room = null, ws = null, me = null, stealth = false, isAdmin = false, info = { creator: false, admin: false, stealth: false, destroyAt: null, own: null, policyAt: null, online: 0, limit: 7 };
   var skew = 0, retry = 0, retryT = 0, leaving = false, seen = {}, lastDay = '', firstJoin = null;
 
   function wsUrl() { return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws'; }
@@ -168,7 +169,7 @@
     var timeout = setTimeout(function () { if (sock.readyState !== 1) sock.close(); }, 10000);
     sock.onopen = function () {
       clearTimeout(timeout);
-      sock.send(JSON.stringify({ t: 'join', room: room.id, token: store.get('dschat:tok:' + room.id) || undefined, create: !!firstJoin }));
+      sock.send(JSON.stringify({ t: 'join', room: room.id, token: store.get('dschat:tok:' + room.id) || undefined, create: !!firstJoin, stealth: stealth || undefined }));
     };
     sock.onmessage = function (ev) {
       var m; try { m = JSON.parse(ev.data); } catch (e) { return; }
@@ -191,7 +192,7 @@
     if (m.t === 'joined') {
       retry = 0;
       skew = m.now - Date.now() / 1000;
-      info.creator = m.creator; info.admin = m.admin; info.destroyAt = m.destroyAt; info.own = m.own; info.policyAt = m.policyAt; info.online = m.online; info.limit = m.limit;
+      info.creator = m.creator; info.admin = m.admin; info.stealth = !!m.stealth; info.destroyAt = m.destroyAt; info.own = m.own; info.policyAt = m.policyAt; info.online = m.online; info.limit = m.limit;
       if (m.token) store.set('dschat:tok:' + room.id, m.token);
       if (m.creator) rememberKey();
       var wasHere = store.get('dschat:seen:' + room.id);
@@ -208,7 +209,7 @@
         else if (!m.history.length) note('已进入房间。还没有消息。');
       }
       scrollDown(true);
-      renderRole(); setPresence(); renderTimer(); renderLimit();
+      renderStealth(); renderTimer(); renderLimit();
       if (firstJoin) { var f = firstJoin; firstJoin = null; f.resolve(); }
     } else if (m.t === 'error') {
       if (firstJoin) { var f2 = firstJoin; firstJoin = null; leaving = true; if (ws) ws.close(); f2.reject(new Error(m.error)); return; }
@@ -257,7 +258,9 @@
   function leaveQuiet() {
     leaving = true; clearTimeout(retryT);
     if (ws) { var s = ws; ws = null; try { s.close(); } catch (e) {} }
-    room = null; seen = {};
+    room = null; seen = {}; stealth = false; info.stealth = false;
+    $('chat').classList.remove('stealth');
+    $('composer').hidden = false; $('stealth-bar').hidden = true;
     closeSheet(); clearReply(); hideTyping(true); dropFiles();
   }
   function send(obj) {
@@ -273,7 +276,7 @@
     $('room-code').textContent = room.code; $('sheet-code').textContent = room.code;
     document.title = '房间 ' + room.code + ' · ds-chat';
     scrollDown(true);
-    $('msg').focus({ preventScroll: true });
+    if (!info.stealth) $('msg').focus({ preventScroll: true });
   }
   function showJoin() {
     $('view-chat').hidden = true; $('view-join').hidden = false;
@@ -281,9 +284,19 @@
     document.title = 'ds-chat 密钥聊天室';
     $('log').innerHTML = ''; $('msg').value = ''; sendState();
     info.destroyAt = info.own = info.policyAt = null; renderTimer();
+    $('stealth').checked = false;
     checkCreation();
+    checkAdmin();
     renderMine();
     keyIn.focus({ preventScroll: true });
+  }
+  // 是不是管理员：是才显示“隐身查看”（普通成员看不到这个选项）
+  function checkAdmin() {
+    fetch('/api/admin/me').then(function (r) { return r.json(); }).then(function (d) {
+      isAdmin = !!(d && d.admin);
+      $('stealth-row').hidden = !isAdmin;
+      renderMine();
+    }, function () {});
   }
   // 管理员关闭了新建房间时，在输入密钥的卡片上先提示一下
   function checkCreation() {
@@ -297,6 +310,7 @@
     var p = $('presence');
     p.className = '';
     if (!ws || ws.readyState !== 1) { p.textContent = '连接断开，正在重连…'; p.className = 'wait'; return; }
+    if (info.stealth) { p.textContent = '隐身查看中 · ' + info.online + ' 人在线'; p.className = 'on'; return; }
     if (info.online > 2) { p.textContent = info.online + ' 人在线 · 上限 ' + info.limit + ' 人'; p.className = 'on'; }
     else if (info.online === 2) { p.textContent = '对方在线' + (info.limit > 2 ? ' · 上限 ' + info.limit + ' 人' : ''); p.className = 'on'; }
     else { p.textContent = '等待对方加入'; p.className = 'off'; }
@@ -344,6 +358,7 @@
     $('mine').hidden = !list.length;
     box.innerHTML = list.map(function (r) {
       return '<li><button type="button" class="mine-go" data-id="' + UI.esc(r.id) + '"><b>' + UI.esc(r.c || r.id.slice(0, 6).toUpperCase()) + '</b><small>' + UI.fmtDay(r.t / 1000) + '创建</small></button>' +
+        (isAdmin ? '<button type="button" class="mine-act" data-act="stealth" data-id="' + UI.esc(r.id) + '">隐身</button>' : '') +
         '<button type="button" class="mine-act" data-act="show" data-id="' + UI.esc(r.id) + '">查看密钥</button>' +
         '<button type="button" class="mine-act" data-act="del" data-id="' + UI.esc(r.id) + '" aria-label="从本机删除这条记录">×</button>' +
         '<code class="mine-key" hidden></code></li>';
@@ -356,6 +371,10 @@
     if (!saved) { renderMine(); return; }
     if (b.classList.contains('mine-go')) {
       keyIn.value = saved.k; clearBad(); meterUpdate();
+      form.requestSubmit ? form.requestSubmit() : form.dispatchEvent(new Event('submit', { cancelable: true }));
+    } else if (b.getAttribute('data-act') === 'stealth') {
+      keyIn.value = saved.k; clearBad(); meterUpdate();
+      $('stealth').checked = true;
       form.requestSubmit ? form.requestSubmit() : form.dispatchEvent(new Event('submit', { cancelable: true }));
     } else if (b.getAttribute('data-act') === 'show') {
       var code = li.querySelector('.mine-key');
@@ -370,10 +389,19 @@
   });
 
   function renderRole() {
-    var can = info.creator || info.admin;
+    var can = (info.creator || info.admin) && !info.stealth;
     $('manage').hidden = !can; $('no-manage').hidden = can;
-    $('sheet-role').textContent = info.creator ? '你是创建者' : info.admin ? '你是管理员' : '你是成员';
+    $('no-manage').textContent = info.stealth ? '隐身查看中，只能看不能改。' : '只有房间创建者和管理员可以销毁房间。';
+    $('sheet-role').textContent = info.stealth ? '管理员（隐身查看）' : info.creator ? '你是创建者' : info.admin ? '你是管理员' : '你是成员';
     keyShown = false; renderKey();
+  }
+  // 隐身查看：输入框换成只读提示，设置面板收起来
+  function renderStealth() {
+    var on = !!info.stealth;
+    $('chat').classList.toggle('stealth', on);
+    $('composer').hidden = on;
+    $('stealth-bar').hidden = !on;
+    renderRole(); setPresence();
   }
   var tick = 0;
   function renderTimer() {
@@ -459,6 +487,7 @@
   }
   function clearReply() { target = null; reply.classList.remove('on'); rx.tabIndex = -1; }
   function wire(m) {
+    if (info.stealth) return;  // 隐身查看：不能回复，也不接滑动手势
     var bub = m.querySelector('.u078-bub'), rep = m.querySelector('.u078-rep'), sx = 0, sy = 0, dx = 0, down = false, sideways = false;
     bub.addEventListener('pointerdown', function (e) { if (e.button !== 0 || e.pointerType === 'mouse') return; down = true; sideways = false; sx = e.clientX; sy = e.clientY; dx = 0; });
     bub.addEventListener('pointermove', function (e) {
@@ -689,6 +718,7 @@
     }
   }
   function sendFiles(list) {
+    if (info.stealth) { UI.toast('info', '隐身查看是只读的', '不能发文件'); return; }
     if (!room || !ws || ws.readyState !== 1) { UI.toast('err', '还没连上，文件没发出去'); return; }
     var owner = room;
     Array.prototype.forEach.call(list, function (file) {
@@ -779,6 +809,25 @@
 
   meterUpdate();
   checkCreation();
+  checkAdmin();
   renderMine();
+  // 管理后台点“隐身查看”跳过来：密钥经 sessionStorage 传一次（不进地址栏），用完就清掉
+  (function () {
+    var raw = null;
+    try { raw = sessionStorage.getItem('dschat:stealth-enter'); sessionStorage.removeItem('dschat:stealth-enter'); } catch (e) {}
+    if (!raw) return;
+    var d = null; try { d = JSON.parse(raw); } catch (e) {}
+    if (!d || typeof d.key !== 'string' || !d.key) return;
+    keyIn.value = d.key; clearBad(); meterUpdate();
+    fetch('/api/admin/me').then(function (r) { return r.json(); }).then(function (m) {
+      if (m && m.admin) {
+        isAdmin = true; $('stealth-row').hidden = false;
+        $('stealth').checked = true;
+        form.requestSubmit ? form.requestSubmit() : form.dispatchEvent(new Event('submit', { cancelable: true }));
+      } else {
+        UI.toast('err', '管理员登录已过期', '请先在管理后台登录，再回来勾选隐身查看进入', 7000);
+      }
+    }, function () { UI.toast('err', '没连上服务器', '请检查网络后再试'); });
+  })();
   keyIn.focus({ preventScroll: true });
 })();

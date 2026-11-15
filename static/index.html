@@ -60,6 +60,8 @@
           <ul id="mine-list"></ul>
         </div>
 
+        <label class="stealth-toggle" id="stealth-row" hidden><input type="checkbox" id="stealth"> <span>隐身查看</span> <small>对方看不到你进来，只能看不能发</small></label>
+
         <button class="u062-go" type="submit" id="join-go"><span>进入房间</span><i aria-hidden="true"></i><svg viewBox="0 0 26 26" aria-hidden="true"><path d="M6 13.5l4.5 4.5L20 8.5"/></svg></button>
       </form>
     </div>
@@ -87,6 +89,7 @@
       <input class="u078-in" id="msg" type="text" placeholder="输入消息" aria-label="消息" autocomplete="off" maxlength="4000" enterkeyhint="send">
       <button class="u078-send" id="send" type="submit" aria-label="发送"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.5 10L16.5 3.5 12 16.5 9.5 11z"/></svg></button>
     </form>
+    <div class="u078-bar stealth-bar" id="stealth-bar" hidden><span>👁 隐身查看中，对方看不到你 · 只读，不能发消息</span></div>
 
     <!-- 房间设置 -->
     <div class="sheet-dim" id="sheet-dim" aria-hidden="true"></div>

@@ -391,7 +391,7 @@ class Hub:
     def __init__(self, db):
         self.db = db
         self.online = {}  # 房间号 -> 在线连接
-        self.kind = {}    # 连接 -> "creator" / "admin" / "member"
+        self.kind = {}    # 连接 -> "creator" / "admin" / "member" / "stealth"（隐身查看的管理员）
         self.dirty = False  # 删过东西，等着把空间还给硬盘
         conf = dict(db.execute("SELECT k, v FROM settings"))
         self.policy_hours = int(conf["policy_hours"]) if conf.get("policy_hours") else None
@@ -480,8 +480,12 @@ class Hub:
         if targets:
             await asyncio.gather(*(ws.send_str(text) for ws in targets), return_exceptions=True)
 
+    def visible_online(self, rid):
+        """房间里看得见的人数：隐身查看的管理员不算。"""
+        return sum(1 for ws in self.online.get(rid, ()) if self.kind.get(ws) != "stealth")
+
     async def presence(self, rid):
-        await self.broadcast(rid, {"t": "presence", "online": len(self.online.get(rid, ()))})
+        await self.broadcast(rid, {"t": "presence", "online": self.visible_online(rid)})
 
     async def set_timer(self, rid, hours, by):
         """hours: 0 = 立即销毁，1～12 = 倒计时，None = 取消倒计时。返回 False 表示房间不存在。"""
@@ -572,7 +576,7 @@ class Hub:
             stale = [r for (r,) in self.db.execute(
                 "SELECT id FROM rooms WHERE last_active < ?", (now - IDLE_DAYS * 86400,))]
             for rid in stale:
-                if not self.online.get(rid):
+                if not self.visible_online(rid):
                     await self.destroy(rid, "idle")
 
 
@@ -719,7 +723,7 @@ class App:
                 "id": rid, "code": rid[:6].upper(), "created": created, "lastActive": active,
                 **hub.timer_info((rid, None, created, active, at, limit)),
                 "limit": limit, "messages": n, "files": nf, "fileBytes": fb,
-                "online": len(hub.online.get(rid, ())),
+                "online": hub.visible_online(rid),
             } for rid, created, active, at, limit, n, nf, fb in rows],
         })
 
@@ -1010,6 +1014,7 @@ class App:
         hub = self.hub
         rid = None
         creator = False
+        stealth = False  # 隐身查看：管理员进房不计人数、不广播、只读
         bucket, last = 20.0, time.monotonic()  # 发消息限速：每秒补 2 条，最多攒 20 条
 
         async def send(payload):
@@ -1031,6 +1036,10 @@ class App:
                 if rid is None:
                     if kind != "join" or not isinstance(data.get("room"), str) or not ROOM_ID.match(data["room"]):
                         await send({"t": "error", "error": "房间号不对"})
+                        break
+                    if data.get("stealth") and not admin:
+                        # 不是管理员却要求隐身：直接拒绝，别让他可见地进房
+                        await send({"t": "error", "error": "隐身查看需要管理员登录"})
                         break
                     row = hub.room(data["room"])
                     token = None
@@ -1055,23 +1064,30 @@ class App:
                         if not creator and not admin and hub.members(row[0]) >= row[5] - 1:
                             await send({"t": "full", "limit": row[5]})
                             break
-                        hub.touch(row[0])
+                        if not (admin and data.get("stealth")):
+                            hub.touch(row[0])  # 隐身查看不算活动，不碰最后活动时间
                     rid = row[0]
-                    hub.kind[ws] = "creator" if creator else "admin" if admin else "member"
+                    # 隐身查看只有管理员能用；不是管理员发来的 stealth 直接忽略
+                    stealth = bool(admin and data.get("stealth"))
+                    hub.kind[ws] = "stealth" if stealth else "creator" if creator else "admin" if admin else "member"
                     hub.online.setdefault(rid, set()).add(ws)
                     await send({
                         "t": "joined", "created": token is not None, "token": token,
-                        "creator": creator, "admin": admin, **hub.timer_info(row),
-                        "online": len(hub.online[rid]), "limit": row[5],
+                        "creator": creator, "admin": admin, "stealth": stealth, **hub.timer_info(row),
+                        "online": hub.visible_online(rid), "limit": row[5],
                         "history": hub.history(rid), "now": time.time(),
                     })
-                    await hub.presence(rid)
+                    if not stealth:
+                        await hub.presence(rid)
                     continue
 
                 if not hub.room(rid):
                     break  # 房间刚被销毁
 
                 if kind == "msg":
+                    if stealth:
+                        await send({"t": "error", "error": "隐身查看是只读的，不能发消息"})
+                        continue
                     now = time.monotonic()
                     bucket = min(20.0, bucket + (now - last) * 2)
                     last = now
@@ -1091,8 +1107,12 @@ class App:
                     item = hub.add_message(rid, body, fid)
                     await hub.broadcast(rid, {"t": "msg", **item})
                 elif kind == "typing":
-                    await hub.broadcast(rid, {"t": "typing"}, skip=ws)
+                    if not stealth:
+                        await hub.broadcast(rid, {"t": "typing"}, skip=ws)
                 elif kind == "timer":
+                    if stealth:
+                        await send({"t": "error", "error": "隐身查看不能改房间设置"})
+                        continue
                     if not (creator or admin):
                         await send({"t": "error", "error": "只有创建者和管理员可以销毁房间"})
                         continue
@@ -1102,6 +1122,9 @@ class App:
                         continue
                     await hub.set_timer(rid, hours, "admin" if admin and not creator else "creator")
                 elif kind == "limit":
+                    if stealth:
+                        await send({"t": "error", "error": "隐身查看不能改房间设置"})
+                        continue
                     if not (creator or admin):
                         await send({"t": "error", "error": "只有创建者和管理员可以改人数上限"})
                         continue
@@ -1113,14 +1136,16 @@ class App:
         except (ConnectionError, OSError):
             pass
         finally:
+            was_stealth = hub.kind.get(ws) == "stealth"
             hub.kind.pop(ws, None)
             if rid and ws in hub.online.get(rid, ()):
                 hub.online[rid].discard(ws)
                 if not hub.online[rid]:
                     hub.online.pop(rid, None)
-                if hub.room(rid):
-                    hub.touch(rid)
-                await hub.presence(rid)
+                if not was_stealth:
+                    if hub.room(rid):
+                        hub.touch(rid)
+                    await hub.presence(rid)
 
 
 def parse_hours(value):
