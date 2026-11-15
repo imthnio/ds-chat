@@ -519,6 +519,14 @@ body>.u269.confirm{position:fixed;z-index:50}
 .u078.chat .u078-m{max-width:min(78%,440px)}
 .u078.chat .u078-m.tail{margin-top:10px}
 .u078.chat .u078-bub{padding:7px 10px 8px 11px;border-radius:14px;background:var(--wa-them);color:var(--wa-ink);font-size:14.5px;line-height:1.4}
+/* 长消息换行：.ux 全局的 word-break:keep-all 会把一整句中文当成不可断的长词，
+   加上 flex 默认 min-width:auto，气泡最小宽度撑破 max-width 后溢出被截断；长链接、
+   长密钥同理（overflow-wrap:break-word 不参与最小宽度计算）。这里在气泡里恢复
+   中文逐字换行，允许长串任意位置断行，并让 flex 容器可以收缩到 max-width 以内。 */
+.u078.chat .u078-log{overflow-x:hidden}
+.u078.chat .u078-m{min-width:0}
+.u078.chat .u078-bub{min-width:0;word-break:normal;overflow-wrap:anywhere}
+.u078.chat .u078-note{word-break:normal;overflow-wrap:anywhere}
 .u078.chat .u078-m.me .u078-bub{border-radius:14px;background:var(--wa-me);color:var(--wa-me-ink)}
 .u078.chat .u078-m.tail .u078-bub{border-top-left-radius:3px}
 .u078.chat .u078-m.me.tail .u078-bub{border-top-left-radius:14px;border-top-right-radius:3px}
