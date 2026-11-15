@@ -132,14 +132,30 @@
         '<span>创建 <b>' + UI.fmtAgo(t - r.created) + '</b></span>' +
         '<span>最近活动 <b>' + UI.fmtAgo(t - r.lastActive) + '</b></span>' +
         timerLabel(r) +
-        '</div><button class="btn soft" type="button" data-id="' + id + '">管理</button></div>';
+        '</div><div class="room-btns"><button class="btn soft" type="button" data-stealth="' + id + '">隐身查看</button><button class="btn soft" type="button" data-id="' + id + '">管理</button></div></div>';
     }).join('');
     renderBatch();
   }
   $('rooms').addEventListener('click', function (e) {
+    var s = e.target.closest('button[data-stealth]');
+    if (s) { stealthView(s.getAttribute('data-stealth')); return; }
     var b = e.target.closest('button[data-id]');
     if (b) openRoom(b.getAttribute('data-id'));
   });
+  // 隐身查看：密钥只存在这台设备的浏览器里，有才进得去；没有就去首页输密钥
+  function stealthView(id) {
+    var saved = null;
+    try { saved = JSON.parse(localStorage.getItem('dschat:key:' + id) || 'null'); } catch (e) {}
+    if (!saved || typeof saved.k !== 'string') {
+      UI.toast('info', '这台设备上没有这个房间的密钥', '请在首页输入密钥后勾选“隐身查看”进入', 7000);
+      return;
+    }
+    try { sessionStorage.setItem('dschat:stealth-enter', JSON.stringify({ key: saved.k })); } catch (e) {
+      UI.toast('err', '跳不过去', '浏览器不让用 sessionStorage，请在首页手动输入密钥');
+      return;
+    }
+    location.href = '/';
+  }
   $('rooms').addEventListener('change', function (e) {
     var c = e.target.closest('input[data-sel]');
     if (!c) return;
