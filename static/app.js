@@ -104,10 +104,14 @@
   function copyText(v, ok, hint) {
     var legacy = function () {
       var t = document.createElement('textarea');
-      t.value = v; t.setAttribute('readonly', ''); t.style.position = 'fixed'; t.style.opacity = '0';
-      document.body.appendChild(t); t.select();
-      try { document.execCommand('copy'); ok(); } catch (e) { UI.toast('err', '复制失败', hint || '请手动选中密钥复制'); }
+      t.value = v; t.setAttribute('readonly', ''); t.style.position = 'fixed'; t.style.top = '0'; t.style.left = '0'; t.style.opacity = '0';
+      document.body.appendChild(t);
+      t.focus(); t.select();
+      try { t.setSelectionRange(0, t.value.length); } catch (e) {}  // iOS 上只靠 select() 经常选不中
+      var done = false;
+      try { done = document.execCommand('copy'); } catch (e) { done = false; }
       t.remove();
+      if (done) ok(); else UI.toast('err', '复制失败', hint || '请手动选中密钥复制');
     };
     if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(v).then(ok, legacy); else legacy();
   }
@@ -465,6 +469,7 @@
         var old = cp.innerHTML;
         cp.innerHTML = TICK; cp.classList.add('done');
         setTimeout(function () { cp.innerHTML = old; cp.classList.remove('done'); }, 1200);
+        UI.toast('ok', '已复制', '', 2000);
       }, '请手动选中文字复制');
     });
     if (f) {
