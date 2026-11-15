@@ -101,12 +101,12 @@
     keyIn.focus({ preventScroll: true });
   });
   // 复制文字：优先用剪贴板接口，不行就借一个临时输入框
-  function copyText(v, ok) {
+  function copyText(v, ok, hint) {
     var legacy = function () {
       var t = document.createElement('textarea');
       t.value = v; t.setAttribute('readonly', ''); t.style.position = 'fixed'; t.style.opacity = '0';
       document.body.appendChild(t); t.select();
-      try { document.execCommand('copy'); ok(); } catch (e) { UI.toast('err', '复制失败', '请手动选中密钥复制'); }
+      try { document.execCommand('copy'); ok(); } catch (e) { UI.toast('err', '复制失败', hint || '请手动选中密钥复制'); }
       t.remove();
     };
     if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(v).then(ok, legacy); else legacy();
@@ -402,6 +402,8 @@
   var CHECK = '<svg class="u078-ck" viewBox="0 0 16 11" aria-label="已发送"><path d="M1.5 6l3.5 3.5L14.5 1"/></svg>';
   var lastWho = null, lastTs = 0;
   var ARROW = '<svg viewBox="0 0 14 14"><path d="M5.5 3.5L2 7l3.5 3.5M2 7h6.5a3.5 3.5 0 0 1 3.5 3.5"/></svg>';
+  var COPY = '<svg viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+  var TICK = '<svg viewBox="0 0 24 24"><path d="M4 12.5l5 5L20 6.5"/></svg>';
 
   function nearBottom() { return log.scrollHeight - log.scrollTop - log.clientHeight < 90; }
   function scrollDown(force) { if (force || nearBottom()) log.scrollTop = log.scrollHeight; }
@@ -426,8 +428,17 @@
       (o && o.r ? '<span class="u078-q"><b>' + (o.rw === 'me' ? (mine ? '你' : '对方') : (mine ? '对方' : '你')) + '</b>' + UI.esc(o.r) + '</span>' : '') +
       (f ? attHTML(f) : '') + UI.esc(text) +
       '<span class="u078-t"><time>' + UI.fmtClock(h.ts) + '</time>' + (mine ? CHECK : '') + '</span></span>' +
-      (mine || !o ? '' : '<button class="u078-rb" type="button" aria-label="回复这条消息">' + ARROW + '</button>');
+      (mine || !o ? '' : '<button class="u078-rb" type="button" aria-label="回复这条消息">' + ARROW + '</button>') +
+      (!o ? '' : '<button class="u078-cp" type="button" aria-label="复制这条消息">' + COPY + '</button>');
     m.setAttribute('data-t', f ? fileLabel(f) + (text ? ' ' + text : '') : text); m.setAttribute('data-w', mine ? '自己' : '对方');
+    var cp = m.querySelector('.u078-cp');
+    if (cp) cp.addEventListener('click', function () {
+      copyText(m.getAttribute('data-t'), function () {
+        var old = cp.innerHTML;
+        cp.innerHTML = TICK; cp.classList.add('done');
+        setTimeout(function () { cp.innerHTML = old; cp.classList.remove('done'); }, 1200);
+      }, '请手动选中文字复制');
+    });
     if (f) {
       m.classList.add('has-att');
       if (uploads[f.id]) { uploads[f.id].el.remove(); delete uploads[f.id]; }  // 自己正在上传的那个占位气泡换成正式消息
