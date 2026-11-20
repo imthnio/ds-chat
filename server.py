@@ -49,7 +49,7 @@ MAX_POLICY_HOURS = 168  # 全局自动销毁最长一周
 MIN_PEOPLE, MAX_PEOPLE = 2, 7  # 房间人数上限可调的范围，新房间默认 MAX_PEOPLE
 HISTORY = 300          # 进入房间时发回最近多少条
 KEEP = 1000            # 每个房间最多保存多少条
-MAX_CIPHER = 16_000    # 一条密文最长多少字符（约 1 万字明文）
+MAX_CIPHER = 24_000    # 一条密文最长多少字符：输入框上限 4000 个汉字（UTF-8 约 12 KB）+ 引用，base64 后要留够余量
 MAX_ROOMS = 20_000
 MAX_BODY = 64 * 1024   # HTTP 请求体和 WebSocket 单条消息的上限
 CHUNK_MAX = 2 * 1024 * 1024  # 上传文件时每一块（已加密）的上限；浏览器每块传 1 MB
@@ -122,7 +122,8 @@ def open_db():
         db.execute(f"ALTER TABLE rooms ADD COLUMN max_people INTEGER NOT NULL DEFAULT {MAX_PEOPLE}")
     if "file" not in [c[1] for c in db.execute("PRAGMA table_info(messages)")]:
         db.execute("ALTER TABLE messages ADD COLUMN file TEXT")  # 这条消息带的文件，删消息时一起删
-    db.execute("CREATE INDEX IF NOT EXISTS messages_file ON messages(file) WHERE file IS NOT NULL")
+    # 不用部分索引（WHERE file IS NOT NULL）：CentOS 7 自带的 SQLite 3.7 不支持，会启动失败
+    db.execute("CREATE INDEX IF NOT EXISTS messages_file ON messages(file)")
     if db.execute("PRAGMA auto_vacuum").fetchone()[0] != 2:
         # 旧版本建的数据库没开自动瘦身：整理一次就开上了（数据库很小，一眨眼的事）
         db.execute("PRAGMA auto_vacuum=INCREMENTAL")
@@ -408,7 +409,13 @@ class Hub:
                         (str(self.create_close_at) if self.create_close_at else "",))
 
     def creation_info(self):
-        return {"open": self.create_open, "closeAt": self.create_close_at}
+        return {"open": self.creation_allowed(), "closeAt": self.create_close_at}
+
+    def creation_allowed(self):
+        """现在能不能新建房间：限时开放到点了就算关闭（不用等下一轮清理）。"""
+        if self.create_open and self.create_close_at and self.create_close_at <= time.time():
+            self.set_creation(False, None)
+        return self.create_open
 
     # --- 全局自动销毁：所有房间（含以后新开的）最多活 policy_hours 小时。
     #     开启前就有的房间从开启时算起，之后新开的从创建时算起。
@@ -465,12 +472,17 @@ class Hub:
     def add_message(self, rid, data, file=None):
         now = time.time()
         cur = self.db.execute("INSERT INTO messages (room, ts, data, file) VALUES (?,?,?,?)", (rid, now, data, file))
-        old = cur.lastrowid - KEEP
-        for (fid,) in self.db.execute(
-                "SELECT file FROM messages WHERE room=? AND id <= ? AND file IS NOT NULL", (rid, old)).fetchall():
-            self.delete_file(rid, fid)  # 太旧被清掉的消息，带的文件也删
-        if self.db.execute("DELETE FROM messages WHERE room=? AND id <= ?", (rid, old)).rowcount:
-            self.dirty = True
+        # 消息号是所有房间共用的自增号，不能拿“最新号 - KEEP”来算：要按这个房间自己的第 KEEP+1 新的那条为界
+        edge = self.db.execute(
+            "SELECT id FROM messages WHERE room=? ORDER BY id DESC LIMIT 1 OFFSET ?", (rid, KEEP)).fetchone()
+        if edge:
+            files = [f for (f,) in self.db.execute(
+                "SELECT file FROM messages WHERE room=? AND id <= ? AND file IS NOT NULL", (rid, edge[0])).fetchall()]
+            if self.db.execute("DELETE FROM messages WHERE room=? AND id <= ?", (rid, edge[0])).rowcount:
+                self.dirty = True
+            for fid in set(files):  # 太旧被清掉的消息，带的文件也删（还有别的消息在用的留着）
+                if not self.db.execute("SELECT 1 FROM messages WHERE file=? LIMIT 1", (fid,)).fetchone():
+                    self.delete_file(rid, fid)
         self.db.execute("UPDATE rooms SET last_active=? WHERE id=?", (now, rid))
         return {"id": cur.lastrowid, "ts": now, "data": data}
 
@@ -596,6 +608,7 @@ class App:
                      "已生成并" if new else "", os.path.join(DATA_DIR, "admin_password.txt"))
         self.login_fails = {}
         self.conns = 0
+        self.uploading = set()  # 正在写入一块数据的文件号
 
     # --- 工具 ---
 
@@ -811,8 +824,8 @@ class App:
                 await asyncio.wait_for(writer.drain(), 30)
                 if not keep:
                     return
-        except (ConnectionError, OSError, asyncio.TimeoutError, asyncio.IncompleteReadError):
-            pass
+        except (ConnectionError, OSError, ValueError, asyncio.TimeoutError, asyncio.IncompleteReadError):
+            pass  # ValueError：请求头某一行太长（超过读取上限）
         finally:
             self.conns -= 1
             try:
@@ -843,7 +856,11 @@ class App:
             return None
         url = urlsplit(target)
         path = url.path or "/"
-        length = int(headers.get("content-length", "0") or 0)
+        raw_len = headers.get("content-length", "0") or "0"
+        if not re.match(r"^[0-9]{1,15}$", raw_len):  # 负数、乱写的长度：不认（负数会让后面边收边写的循环出错）
+            writer.write(encode_response(Response("请求不对", 400), keep_alive=False))
+            return None
+        length = int(raw_len)
         # 上传文件的那一块不在这里读：交给 files() 边收边写硬盘，不占内存
         upload = method.upper() == "PUT" and path.startswith("/api/files/")
         if length > (CHUNK_MAX if upload else MAX_BODY) or "chunked" in headers.get("transfer-encoding", ""):
@@ -905,6 +922,11 @@ class App:
         if len(parts) == 2 and method == "PUT":
             if done:
                 raise HTTPError(409, "文件已经传完了")
+            if fid in self.uploading:
+                # 同一个文件已经有一块正在写（比如浏览器超时重发了）：两块同时写会把文件写乱
+                await self.discard(reader, request.length)
+                reply(json_response({"size": size}, 409))
+                return True
             if request.query.get("offset") != str(size):
                 # 位置对不上（比如断线重传）：告诉浏览器从哪接着传。这一块的数据不要了
                 await self.discard(reader, request.length)
@@ -913,19 +935,25 @@ class App:
             if self.free_mb() < MIN_FREE_MB // 3:
                 raise HTTPError(507, "服务器硬盘空间不够了")
             left = request.length
-            with open(path, "r+b") as f:
-                f.seek(size)
-                try:
-                    while left:
-                        data = await asyncio.wait_for(reader.read(min(65536, left)), 30)
-                        if not data:
-                            raise ConnectionError("upload cut off")
-                        f.write(data)
-                        left -= len(data)
-                except BaseException:
-                    f.truncate(size)  # 只收到半块：退回去，下次从原位置接着传
-                    raise
-            hub.db.execute("UPDATE files SET size=?, updated=? WHERE id=?", (size + request.length, time.time(), fid))
+            self.uploading.add(fid)
+            try:
+                with open(path, "r+b") as f:
+                    f.seek(size)
+                    try:
+                        while left:
+                            data = await asyncio.wait_for(reader.read(min(65536, left)), 30)
+                            if not data:
+                                raise ConnectionError("upload cut off")
+                            f.write(data)
+                            left -= len(data)
+                    except BaseException:
+                        f.truncate(size)  # 只收到半块：退回去，下次从原位置接着传
+                        raise
+            finally:
+                self.uploading.discard(fid)
+            if not hub.db.execute("UPDATE files SET size=?, updated=? WHERE id=?",
+                                  (size + request.length, time.time(), fid)).rowcount:
+                raise HTTPError(404, "文件已被清理")  # 传这一块的时候房间被销毁了
             reply(json_response({"size": size + request.length}))
             return True
 
@@ -947,7 +975,8 @@ class App:
                 start = int(m.group(1))
                 end = min(int(m.group(2)) if m.group(2) else size - 1, size - 1)
                 if start > end:
-                    raise HTTPError(416, "范围不对")
+                    writer.write(encode_response(Response("范围不对", 416, headers={"Content-Range": f"bytes */{size}"})))
+                    return True
                 status = 206
             headers = {"Cache-Control": "private, no-store", "Accept-Ranges": "bytes"}
             if status == 206:
@@ -1047,8 +1076,12 @@ class App:
                         # 断线重连时房间已经没了：别悄悄建一个新的
                         await send({"t": "gone"})
                         break
+                    if row is None and data.get("stealth"):
+                        # 隐身查看只能看已有的房间，不能顺手建一个新房间（还会变成它的创建者）
+                        await send({"t": "error", "error": "这个房间不存在，隐身查看只能进入已有的房间"})
+                        break
                     if row is None:
-                        if not hub.create_open and not admin:
+                        if not hub.creation_allowed() and not admin:
                             await send({"t": "error", "error": "管理员暂时关闭了新建房间，现在只能用已有房间的密钥进入"})
                             break
                         if hub.db.execute("SELECT COUNT(*) FROM rooms").fetchone()[0] >= MAX_ROOMS:

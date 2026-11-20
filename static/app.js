@@ -156,7 +156,7 @@
 
   /* ---------- 房间连接 ---------- */
   var room = null, ws = null, me = null, stealth = false, isAdmin = false, info = { creator: false, admin: false, stealth: false, destroyAt: null, own: null, policyAt: null, online: 0, limit: 7 };
-  var skew = 0, retry = 0, retryT = 0, leaving = false, seen = {}, lastDay = '', firstJoin = null;
+  var skew = 0, retry = 0, retryT = 0, leaving = false, seen = {}, lastDay = '', firstJoin = null, inbox = Promise.resolve();
 
   function wsUrl() { return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws'; }
 
@@ -177,8 +177,8 @@
     };
     sock.onmessage = function (ev) {
       var m; try { m = JSON.parse(ev.data); } catch (e) { return; }
-      if (sock !== ws) return;
-      handle(m);
+      // 一条一条按顺序处理：解密是异步的，不排队的话新消息可能插到历史记录前面，顺序也会乱
+      inbox = inbox.then(function () { if (sock === ws) return handle(m, sock); }).catch(function (e) { console.error(e); });
     };
     sock.onclose = function (ev) {
       clearTimeout(timeout);
@@ -192,8 +192,9 @@
     };
   }
 
-  async function handle(m) {
+  async function handle(m, sock) {
     if (m.t === 'joined') {
+      sock.joined = true;
       retry = 0;
       skew = m.now - Date.now() / 1000;
       info.creator = m.creator; info.admin = m.admin; info.stealth = !!m.stealth; info.destroyAt = m.destroyAt; info.own = m.own; info.policyAt = m.policyAt; info.online = m.online; info.limit = m.limit;
@@ -217,6 +218,8 @@
       if (firstJoin) { var f = firstJoin; firstJoin = null; f.resolve(); }
     } else if (m.t === 'error') {
       if (firstJoin) { var f2 = firstJoin; firstJoin = null; leaving = true; if (ws) ws.close(); f2.reject(new Error(m.error)); return; }
+      // 重连时进房被拒（比如隐身查看时管理员登录过期了）：服务器会断开，别没完没了地重连、弹提示
+      if (!sock.joined) { leaveQuiet(); showJoin(); UI.toast('err', '重连失败', m.error, 7000); return; }
       UI.toast('err', m.error);
     } else if (m.t === 'msg') {
       var o = await open(m.data);
@@ -649,7 +652,9 @@
       }
     }
     job.p = Promise.all([worker(), worker(), worker()]).then(function () {
-      var url = URL.createObjectURL(new Blob(parts, { type: f.t || 'application/octet-stream' }));
+      // 类型是发送方写的，不可信：普通文件一律按二进制处理，免得 text/html 之类的被浏览器当网页打开
+      var type = kindOf(f) === 'file' ? 'application/octet-stream' : f.t;
+      var url = URL.createObjectURL(new Blob(parts, { type: type }));
       if (room && room.id === rid) blobs[f.id] = url;
       delete loading[f.id];
       return url;
@@ -687,13 +692,14 @@
       if (r.status === 409) {
         var s = -1; try { s = (await r.json()).size; } catch (e) {}
         if (s === offset + body.length) return s;  // 这一块其实已经传上去了，只是回应丢了
+        if (s === offset && t < 5) { await sleep(1000 * (t + 1)); continue; }  // 上一次重发的还在写：等它写完再看
       }
       throw new Error((await r.text().catch(function () { return ''; })) || '上传失败（' + r.status + '）');
     }
   }
   async function uploadOne(file, up, owner) {
     if (up.cancelled || room !== owner) return;  // 已经离开了发文件时所在的房间
-    var rid = owner.id, key = owner.aes, fid = null;
+    var rid = owner.id, key = owner.aes, fid = null, finished = false;
     try {
       var r = await fetch('/api/files/' + rid, { method: 'POST' });
       if (!r.ok) throw new Error(await r.text() || '上传失败');
@@ -711,6 +717,7 @@
       }
       r = await fetch(base + '/done', { method: 'POST' });
       if (!r.ok) throw new Error('上传失败');
+      finished = true;
       if (up.cancelled || room !== owner) return;
       blobs[fid] = URL.createObjectURL(file);  // 自己发的不用再下载一遍
       uploads[fid] = up;
@@ -719,6 +726,8 @@
       if (!send({ t: 'msg', data: data, file: fid })) throw new Error('还没连上，没发出去');
     } catch (e) {
       if (fid) delete uploads[fid];
+      // 传到一半失败：告诉服务器把半截文件删掉，不用等 6 小时后的自动清理
+      if (fid && !finished) fetch('/api/files/' + rid + '/' + fid + '/cancel', { method: 'POST' }).catch(function () {});
       up.fail(e.message);
     }
   }
