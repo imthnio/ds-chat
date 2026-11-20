@@ -332,8 +332,9 @@
     $('limit-online').textContent = '现在 ' + r.online + ' 人在线';
   }
 
-  async function setTimer(hoursValue, okText) {
-    var id = current.id;
+  async function setTimer(hoursValue, okText, room) {
+    var id = (room || current || {}).id;
+    if (!id) return;
     try {
       var res = await api('/api/admin/rooms/' + id + '/timer', { hours: hoursValue });
       if (!res.ok) throw new Error(res.data.error || '操作失败');
@@ -345,7 +346,8 @@
   $('timer-set').addEventListener('click', function () { setTimer(hours.value, '已设为 ' + hours.value + ' 小时后销毁'); });
   $('timer-cancel').addEventListener('click', function () { setTimer(null, '已取消销毁倒计时'); });
   $('destroy-now').addEventListener('click', async function () {
-    if (current && await ask(current.code)) setTimer(0, '房间已销毁');
+    var r = current;  // 确认框开着的时候面板可能被关掉（current 变成 null），先记住是哪个房间
+    if (r && await ask(r.code)) setTimer(0, '房间已销毁', r);
   });
 
   api('/api/admin/me').then(function (r) { if (r.data.admin) showRooms(); else showLogin(); }, showLogin);
