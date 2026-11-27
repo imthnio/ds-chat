@@ -87,9 +87,3 @@ curl -fsSL https://raw.githubusercontent.com/imthnio/ds-chat/main/install.sh | b
 浏览器只在 HTTPS（或 localhost）页面里开放加密功能，所以对外一定要用 HTTPS。
 
 界面元素来自 [Lucian UX/UI Prompt](https://lucianlabs.dev/uxui-prompt/)（MIT License）。
-
-## 赞赏支持
-如果这个项目帮到了你，欢迎请我喝杯咖啡 ☕  
-微信扫一扫下方赞赏码即可：
-
-![赞赏码](./appreciate.png)
